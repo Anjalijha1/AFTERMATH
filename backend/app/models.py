@@ -1,5 +1,5 @@
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 SCENARIO_IDS = Literal['allowed_refund', 'excessive_refund', 'injection_refund', 'account_email_change']
 
@@ -10,6 +10,14 @@ class RunInput(BaseModel):
     # All money is INR minor units, never float. None uses the scenario default.
     amount_minor: int | None = Field(default=None, ge=0, le=10_000_000)
     ticket: str | None = Field(default=None, min_length=1, max_length=4000)
+
+
+    @field_validator('ticket')
+    @classmethod
+    def ticket_not_blank(cls, value):
+        if value is not None and not value.strip():
+            raise ValueError('Ticket cannot contain only whitespace.')
+        return value
 
 
 class RunAccepted(BaseModel):
