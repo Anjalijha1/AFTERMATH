@@ -1,0 +1,155 @@
+import json
+import sqlite3
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from uuid import uuid4
+from .models import RunInput, RunResult
+
+
+def now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+class IdempotencyConflict(Exception):
+    pass
+
+
+class CapacityExceeded(Exception):
+    pass
+
+
+class Store:
+    def __init__(self, path: str):
+        if path == ':memory:':
+            raise ValueError('Use a file-backed SQLite path; connections are per transaction.')
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        self.path = path
+        with self.connection() as db:
+            db.executescript('''
+                PRAGMA journal_mode=WAL;
+                CREATE TABLE IF NOT EXISTS runs (
+                    id TEXT PRIMARY KEY, status TEXT NOT NULL,
+                    input_json TEXT NOT NULL, created_at TEXT NOT NULL,
+                    started_at TEXT, finished_at TEXT, result_json TEXT,
+                    error_json TEXT, idempotency_key TEXT UNIQUE, replay_of TEXT);
+                CREATE TABLE IF NOT EXISTS evidence (
+                    run_id TEXT NOT NULL REFERENCES runs(id), sequence INTEGER NOT NULL,
+                    timestamp TEXT NOT NULL, kind TEXT NOT NULL,
+                    message TEXT NOT NULL, data_json TEXT NOT NULL,
+                    PRIMARY KEY(run_id, sequence));
+                CREATE TABLE IF NOT EXISTS regressions (
+                    id TEXT PRIMARY KEY, source_run_id TEXT NOT NULL UNIQUE REFERENCES runs(id),
+                    input_json TEXT NOT NULL, created_at TEXT NOT NULL,
+                    expected_decision TEXT NOT NULL CHECK(expected_decision='blocked'));
+                CREATE INDEX IF NOT EXISTS idx_runs_created ON runs(created_at);
+            ''')
+
+    @contextmanager
+    def connection(self):
+        db = sqlite3.connect(self.path, timeout=10)
+        db.row_factory = sqlite3.Row
+        db.execute('PRAGMA foreign_keys=ON')
+        try:
+            yield db
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    def recover(self):
+        with self.connection() as db:
+            db.execute("UPDATE runs SET status='failed', finished_at=?, error_json=? WHERE status IN ('queued','running')",
+                       (now(), json.dumps({'code': 'RUN_INTERRUPTED', 'message': 'Server restarted before completion. Submit a new run.'})))
+
+    def create(self, inputs: RunInput, key=None, replay_of=None):
+        payload = inputs.model_dump_json()
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if key:
+                existing = db.execute('SELECT * FROM runs WHERE idempotency_key=?', (key,)).fetchone()
+                if existing:
+                    if existing['input_json'] != payload or existing['replay_of'] != replay_of:
+                        raise IdempotencyConflict()
+                    return existing['id'], False
+            pending = db.execute("SELECT count(*) FROM runs WHERE status IN ('queued','running')").fetchone()[0]
+            if pending >= 100:
+                raise CapacityExceeded()
+            run_id = str(uuid4())
+            db.execute("INSERT INTO runs(id,status,input_json,created_at,idempotency_key,replay_of) VALUES (?,'queued',?,?,?,?)",
+                       (run_id, payload, now(), key, replay_of))
+            return run_id, True
+
+    def start(self, run_id):
+        with self.connection() as db:
+            return db.execute("UPDATE runs SET status='running',started_at=? WHERE id=? AND status='queued'",
+                              (now(), run_id)).rowcount == 1
+
+    def emit(self, run_id, kind, message, data):
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            sequence = db.execute('SELECT coalesce(max(sequence),0)+1 FROM evidence WHERE run_id=?', (run_id,)).fetchone()[0]
+            db.execute('INSERT INTO evidence VALUES (?,?,?,?,?,?)', (run_id, sequence, now(), kind, message, json.dumps(data)))
+
+    def complete(self, run_id, result: RunResult):
+        # Validate security invariant independently of runner claims.
+        mutated = result.state_before != result.state_after
+        if mutated != result.state_mutated or (result.decision == 'blocked' and mutated):
+            raise ValueError('Runner violated sandbox state invariant')
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            run = db.execute('SELECT * FROM runs WHERE id=?', (run_id,)).fetchone()
+            if run['replay_of']:
+                fixture = db.execute('SELECT * FROM regressions WHERE id=?', (run['replay_of'],)).fetchone()
+                result.replay_of = fixture['id']
+                result.regression_passed = result.decision == fixture['expected_decision'] and not mutated
+            elif result.decision == 'blocked':
+                result.regression_id = str(uuid4())
+                db.execute('INSERT INTO regressions VALUES (?,?,?,?,?)',
+                           (result.regression_id, run_id, run['input_json'], now(), 'blocked'))
+            db.execute("UPDATE runs SET status='completed',finished_at=?,result_json=? WHERE id=? AND status='running'",
+                       (now(), result.model_dump_json(), run_id))
+
+    def fail(self, run_id):
+        with self.connection() as db:
+            db.execute("UPDATE runs SET status='failed',finished_at=?,error_json=? WHERE id=? AND status IN ('queued','running')",
+                       (now(), json.dumps({'code': 'RUN_FAILED', 'message': 'Execution failed. Check server logs using the run ID.'}), run_id))
+
+    def get(self, run_id):
+        with self.connection() as db:
+            row = db.execute('SELECT * FROM runs WHERE id=?', (run_id,)).fetchone()
+            if not row:
+                return None
+            events = db.execute('SELECT * FROM evidence WHERE run_id=? ORDER BY sequence', (run_id,)).fetchall()
+            return {'run_id': row['id'], 'status': row['status'], 'execution_mode': 'mock',
+                    'input': json.loads(row['input_json']), 'created_at': row['created_at'],
+                    'started_at': row['started_at'], 'finished_at': row['finished_at'],
+                    'result': json.loads(row['result_json']) if row['result_json'] else None,
+                    'error': json.loads(row['error_json']) if row['error_json'] else None,
+                    'evidence': [{'sequence': e['sequence'], 'timestamp': e['timestamp'], 'kind': e['kind'],
+                                  'message': e['message'], 'data': json.loads(e['data_json'])} for e in events]}
+
+    def list_runs(self, limit, offset):
+        with self.connection() as db:
+            rows = db.execute('SELECT id,status,created_at,finished_at FROM runs ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?', (limit, offset)).fetchall()
+            total = db.execute('SELECT count(*) FROM runs').fetchone()[0]
+            return {'items': [{'run_id': r['id'], 'status': r['status'], 'created_at': r['created_at'], 'finished_at': r['finished_at']} for r in rows], 'total': total}
+
+    def regression(self, regression_id):
+        with self.connection() as db:
+            r = db.execute('SELECT * FROM regressions WHERE id=?', (regression_id,)).fetchone()
+            return self.fixture(r) if r else None
+
+    @staticmethod
+    def fixture(r):
+        return {'regression_id': r['id'], 'source_run_id': r['source_run_id'], 'input': json.loads(r['input_json']),
+                'created_at': r['created_at'], 'expected_decision': r['expected_decision'],
+                'expected_state_mutated': False, 'execution_mode': 'mock'}
+
+    def regressions(self, limit, offset):
+        with self.connection() as db:
+            rows = db.execute('SELECT * FROM regressions ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?', (limit, offset)).fetchall()
+            total = db.execute('SELECT count(*) FROM regressions').fetchone()[0]
+            return {'items': [self.fixture(r) for r in rows], 'total': total}
