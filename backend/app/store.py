@@ -101,8 +101,12 @@ class Store:
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             run = db.execute('SELECT * FROM runs WHERE id=?', (run_id,)).fetchone()
+            if run is None or run['status'] != 'running':
+                raise ValueError('Only an existing running run can complete')
             if run['replay_of']:
                 fixture = db.execute('SELECT * FROM regressions WHERE id=?', (run['replay_of'],)).fetchone()
+                if fixture is None:
+                    raise ValueError('Replay fixture no longer exists')
                 result.replay_of = fixture['id']
                 result.regression_passed = result.decision == fixture['expected_decision'] and not mutated
             elif result.decision == 'blocked':
