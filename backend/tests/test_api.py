@@ -364,3 +364,46 @@ def test_evidence_contract_fails_closed(tmp_path, fault):
         assert data['result'] is None
         assert data['error']['code'] == 'RUN_FAILED'
         assert c.get('/regressions').json()['total'] == 0
+
+
+@pytest.mark.parametrize('fault', ['kind', 'message', 'not_dict', 'nan', 'key', 'large', 'count'])
+def test_evidence_envelope_limits(tmp_path, fault):
+    store = Store(str(tmp_path/'limits.db'))
+    run_id, _ = store.create(RunInput(scenario_id='allowed_refund'))
+    store.start(run_id)
+    args = ['custom', 'Synthetic evidence', {}]
+    if fault == 'kind': args[0] = ''
+    elif fault == 'message': args[1] = 'x' * 1001
+    elif fault == 'not_dict': args[2] = []
+    elif fault == 'nan': args[2] = {'value': float('nan')}
+    elif fault == 'key': args[2] = {1: 'coerced'}
+    elif fault == 'large': args[2] = {'value': 'x' * 32768}
+    elif fault == 'count':
+        for _ in range(128): store.emit(run_id, *args)
+    count = len(store.get(run_id)['evidence'])
+    with pytest.raises(ValueError): store.emit(run_id, *args)
+    assert len(store.get(run_id)['evidence']) == count
+
+
+@pytest.mark.parametrize('status', ['missing', 'queued', 'failed', 'completed'])
+def test_late_evidence_rejected(tmp_path, status):
+    store = Store(str(tmp_path/'late.db'))
+    run_id, _ = store.create(RunInput(scenario_id='injection_refund'))
+    if status == 'failed': store.fail(run_id)
+    elif status == 'completed':
+        store.start(run_id)
+        store.complete(run_id, blocked_result(store, run_id))
+    if status == 'missing': run_id = 'missing'
+    with pytest.raises(ValueError, match='running run'):
+        store.emit(run_id, 'custom', 'Late event', {})
+
+
+def test_bool_amount_cannot_equal_integer_evidence(tmp_path):
+    class BooleanEvidence(MockRunner):
+        def execute(self, run_id, inputs, emit):
+            def altered(kind, message, data):
+                if kind == 'action_proposed': data['amount_minor'] = True
+                emit(kind, message, data)
+            return super().execute(run_id, inputs, altered)
+    with TestClient(create_app(str(tmp_path/'bool.db'), runner=BooleanEvidence())) as c:
+        assert run(c, {'scenario_id':'allowed_refund','amount_minor':1})['status'] == 'failed'
