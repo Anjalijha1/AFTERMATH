@@ -78,10 +78,26 @@ class Store:
         finally:
             db.close()
 
+    @staticmethod
+    def terminal_failure(db, run_id, code, message):
+        changed = db.execute("UPDATE runs SET status='failed',finished_at=?,error_json=? "
+                             "WHERE id=? AND status IN ('queued','running')",
+                             (now(), json.dumps({'code': code, 'message': message}), run_id)).rowcount
+        if changed:
+            sequence = db.execute('SELECT coalesce(max(sequence),0)+1 FROM evidence WHERE run_id=?',
+                                  (run_id,)).fetchone()[0]
+            # One backend-owned terminal event is reserved beyond the runner budget.
+            db.execute('INSERT INTO evidence VALUES (?,?,?,?,?,?)',
+                       (run_id, sequence, now(), 'run_failed', message, json.dumps({'code': code})))
+        return bool(changed)
+
     def recover(self):
         with self.connection() as db:
-            db.execute("UPDATE runs SET status='failed', finished_at=?, error_json=? WHERE status IN ('queued','running')",
-                       (now(), json.dumps({'code': 'RUN_INTERRUPTED', 'message': 'Server restarted before completion. Submit a new run.'})))
+            db.execute('BEGIN IMMEDIATE')
+            rows = db.execute("SELECT id FROM runs WHERE status IN ('queued','running')").fetchall()
+            for row in rows:
+                self.terminal_failure(db, row['id'], 'RUN_INTERRUPTED',
+                                      'Server restarted before completion. Submit a new run.')
 
     def create(self, inputs: RunInput, key=None, replay_of=None):
         payload = inputs.model_dump_json()
@@ -197,8 +213,9 @@ class Store:
 
     def fail(self, run_id):
         with self.connection() as db:
-            db.execute("UPDATE runs SET status='failed',finished_at=?,error_json=? WHERE id=? AND status IN ('queued','running')",
-                       (now(), json.dumps({'code': 'RUN_FAILED', 'message': 'Execution failed. Check server logs using the run ID.'}), run_id))
+            db.execute('BEGIN IMMEDIATE')
+            return self.terminal_failure(db, run_id, 'RUN_FAILED',
+                                         'Execution failed. Check server logs using the run ID.')
 
     def get(self, run_id):
         with self.connection() as db:
