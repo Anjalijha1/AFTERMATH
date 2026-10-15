@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import re
@@ -25,8 +26,10 @@ def create_app(db_path=None, runner: Runner | None = None, api_key=None):
         # Single API process only. Do not run multiple uvicorn workers against this DB.
         store.recover()
         app.state.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='aftermath')
-        yield
-        app.state.executor.shutdown(wait=True)
+        try:
+            yield
+        finally:
+            await asyncio.to_thread(app.state.executor.shutdown, wait=True)
 
     app = FastAPI(title='AFTERMATH Backend', version='0.1.0', lifespan=lifespan,
                   description='Member 1 backend. Mock sandbox only. No real ArmorIQ, MCP or LLM integration.')
@@ -65,9 +68,9 @@ def create_app(db_path=None, runner: Runner | None = None, api_key=None):
         raise HTTPException(404, detail={'code': code, 'message': message})
 
     def execute(run_id, inputs):
-        if not store.start(run_id):
-            return
         try:
+            if not store.start(run_id):
+                return
             result = adapter.execute(run_id, inputs, lambda kind, message, data: store.emit(run_id, kind, message, data))
             store.complete(run_id, result)
         except Exception:
