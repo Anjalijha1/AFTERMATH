@@ -537,3 +537,62 @@ def test_runner_cannot_forge_terminal_event(tmp_path):
         assert data['status'] == 'failed'
         assert len(data['evidence']) == 1
         assert data['evidence'][0]['data'] == {'code':'RUN_FAILED'}
+
+
+@pytest.mark.parametrize('damage', ['missing', 'no_result', 'noncompleted', 'nonblocked', 'malformed'])
+def test_corrupt_replay_source_fails_without_completion_writes(tmp_path, damage):
+    import json
+    import sqlite3
+    path = str(tmp_path/'source.db')
+    store = Store(path)
+    source_id, _ = store.create(RunInput(scenario_id='injection_refund'))
+    store.start(source_id)
+    store.complete(source_id, blocked_result(store, source_id))
+    fixture = store.get(source_id)['result']['regression_id']
+    replay_id, _ = store.create(RunInput(scenario_id='injection_refund'), replay_of=fixture)
+    store.start(replay_id)
+    result = blocked_result(store, replay_id)
+    # Deliberately corrupt storage, including bypassing FK protection for the missing case.
+    with sqlite3.connect(path) as db:
+        if damage == 'missing': db.execute('DELETE FROM runs WHERE id=?',(source_id,))
+        elif damage == 'no_result': db.execute('UPDATE runs SET result_json=NULL WHERE id=?',(source_id,))
+        elif damage == 'noncompleted': db.execute("UPDATE runs SET status='failed' WHERE id=?",(source_id,))
+        elif damage == 'malformed': db.execute("UPDATE runs SET result_json='{}' WHERE id=?",(source_id,))
+        else:
+            data = store.get(source_id)['result']
+            data['decision'] = 'allowed'
+            db.execute('UPDATE runs SET result_json=? WHERE id=?',(json.dumps(data),source_id))
+    before = store.get(replay_id)
+    with pytest.raises(ValueError): store.complete(replay_id, result)
+    assert store.get(replay_id) == before
+    assert store.regressions(100,0)['total'] == 1
+
+
+def test_snapshot_boolean_drift_is_not_equal_to_zero(tmp_path):
+    class BooleanSnapshot(MockRunner):
+        def execute(self, run_id, inputs, emit):
+            result = super().execute(run_id, inputs, emit)
+            result.state_before['refunded_minor'] = False
+            result.state_after['refunded_minor'] = False
+            return result
+    with TestClient(create_app(str(tmp_path/'snapshot.db'), runner=BooleanSnapshot())) as c:
+        assert run(c, {'scenario_id':'injection_refund'})['status'] == 'failed'
+
+
+def test_terminal_marker_has_reserved_capacity(tmp_path):
+    store = Store(str(tmp_path/'reserved.db'))
+    run_id, _ = store.create(RunInput(scenario_id='allowed_refund'))
+    store.start(run_id)
+    for _ in range(128): store.emit(run_id,'custom','Diagnostic event',{})
+    assert store.fail(run_id)
+    assert not store.fail(run_id)
+    events = store.get(run_id)['evidence']
+    assert len(events) == 129 and events[-1]['kind'] == 'run_failed'
+    assert [e['sequence'] for e in events] == list(range(1,130))
+
+
+def test_exact_body_byte_limit(client):
+    payload = b'{"scenario_id":"allowed_refund"}'
+    body = payload + b' ' * (65536 - len(payload))
+    assert client.post('/runs',content=body,headers={'Content-Type':'application/json'}).status_code == 202
+    assert client.post('/runs',content=body+b' ',headers={'Content-Type':'application/json'}).status_code == 413
