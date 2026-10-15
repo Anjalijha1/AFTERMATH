@@ -258,8 +258,9 @@ def test_whitespace_ticket_rejected(client):
     assert client.get('/runs').json()['total'] == 0
 
 
-def blocked_result():
-    return MockRunner().execute('test', RunInput(scenario_id='injection_refund'), lambda *args: None)
+def blocked_result(store=None, run_id='test'):
+    emit = (lambda *args: store.emit(run_id, *args)) if store else (lambda *args: None)
+    return MockRunner().execute(run_id, RunInput(scenario_id='injection_refund'), emit)
 
 
 @pytest.mark.parametrize('status', ['missing', 'queued', 'failed', 'completed'])
@@ -272,7 +273,7 @@ def test_completion_requires_running_row(tmp_path, status):
             store.fail(run_id)
         elif status == 'completed':
             store.start(run_id)
-            store.complete(run_id, blocked_result())
+            store.complete(run_id, blocked_result(store, run_id))
     before = store.get(run_id)
     fixtures = store.regressions(100, 0)
     with pytest.raises(ValueError, match='running run'):
@@ -299,7 +300,8 @@ def test_replay_checks_original_contract(tmp_path, drift):
         fixture = run(c, {'scenario_id': 'injection_refund'})['result']['regression_id']
     class DriftRunner(MockRunner):
         def execute(self, run_id, inputs, emit):
-            result = super().execute(run_id, inputs, emit)
+            events = []
+            result = super().execute(run_id, inputs, lambda *args: events.append(args))
             if drift == 'action':
                 result.action = 'change_account_email'
             elif drift == 'amount':
@@ -307,6 +309,15 @@ def test_replay_checks_original_contract(tmp_path, drift):
             elif drift == 'baseline':
                 result.state_before['customer_id'] = 'OTHER'
                 result.state_after['customer_id'] = 'OTHER'
+            for kind, message, data in events:
+                if kind == 'action_proposed':
+                    data['action'] = result.action
+                    data['amount_minor'] = result.amount_minor
+                if kind == 'tool_blocked':
+                    data['tool'] = result.action
+                if kind == 'state_verified':
+                    data.update(state_before=result.state_before, state_after=result.state_after)
+                emit(kind, message, data)
             result.regression_id = 'forged'
             result.replay_of = 'forged'
             result.regression_passed = True
@@ -318,3 +329,38 @@ def test_replay_checks_original_contract(tmp_path, drift):
         assert data['result']['regression_passed'] is (drift == 'none')
         assert data['result']['replay_of'] == fixture
         assert data['result']['regression_id'] is None
+
+
+@pytest.mark.parametrize('fault', ['missing', 'duplicate', 'both_outcomes', 'wrong_outcome',
+                                    'action', 'amount', 'snapshot', 'order'])
+def test_evidence_contract_fails_closed(tmp_path, fault):
+    class IncoherentRunner(MockRunner):
+        def execute(self, run_id, inputs, emit):
+            events = []
+            result = super().execute(run_id, inputs, lambda *args: events.append(args))
+            if fault == 'missing':
+                events = [e for e in events if e[0] != 'action_proposed']
+            elif fault == 'duplicate':
+                events += [next(e for e in events if e[0] == 'policy_decision')]
+            elif fault == 'both_outcomes':
+                events += [('tool_executed', 'Contradiction', {'tool': result.action})]
+            elif fault == 'wrong_outcome':
+                events = [('tool_executed' if k == 'tool_blocked' else k, m, d) for k,m,d in events]
+            elif fault == 'order':
+                events.reverse()
+            else:
+                kind = 'state_verified' if fault == 'snapshot' else 'action_proposed'
+                data = next(d for k,m,d in events if k == kind)
+                if fault == 'snapshot':
+                    data['state_after'] = {'wrong': True}
+                else:
+                    data['action' if fault == 'action' else 'amount_minor'] = 'wrong'
+            for event in events:
+                emit(*event)
+            return result
+    with TestClient(create_app(str(tmp_path/'evidence.db'), runner=IncoherentRunner())) as c:
+        data = run(c, {'scenario_id':'injection_refund'})
+        assert data['status'] == 'failed'
+        assert data['result'] is None
+        assert data['error']['code'] == 'RUN_FAILED'
+        assert c.get('/regressions').json()['total'] == 0
