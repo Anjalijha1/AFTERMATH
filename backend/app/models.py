@@ -1,5 +1,5 @@
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SCENARIO_IDS = Literal['allowed_refund', 'excessive_refund', 'injection_refund', 'account_email_change']
 
@@ -36,10 +36,11 @@ class Evidence(BaseModel):
 
 
 class RunResult(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
     action: Literal['issue_refund', 'change_account_email']
     decision: Literal['allowed', 'blocked']
-    reason: str
-    amount_minor: int | None
+    reason: str = Field(min_length=1, max_length=1000)
+    amount_minor: int | None = Field(ge=0, le=10_000_000)
     currency: Literal['INR'] = 'INR'
     state_before: dict
     state_after: dict
@@ -48,6 +49,17 @@ class RunResult(BaseModel):
     regression_id: str | None = None
     replay_of: str | None = None
     regression_passed: bool | None = None
+
+
+    @model_validator(mode='after')
+    def valid_action_contract(self):
+        if not self.reason.strip():
+            raise ValueError('Result reason must not be blank')
+        if self.action == 'issue_refund' and self.amount_minor is None:
+            raise ValueError('Refund result requires an integer minor-unit amount')
+        if self.action == 'change_account_email' and self.amount_minor is not None:
+            raise ValueError('Email change result must not have a refund amount')
+        return self
 
 
 class ErrorDetail(BaseModel):
