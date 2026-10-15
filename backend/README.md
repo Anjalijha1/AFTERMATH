@@ -113,7 +113,8 @@ amounts/actions or invoke an LLM. Do not enter real personal data or secrets.
 
 `Idempotency-Key` is optional, 1-128 characters `[A-Za-z0-9._:-]`. The same
 key with the same parsed inputs returns the existing run, including after
-restart. A different input/replay using that key returns 409. Reuse cannot
+restart. A different input/replay using that key returns 409. Duplicate Idempotency-Key
+headers are rejected with 422; send exactly one. Reuse cannot
 restart a failed run: submit a new key for a new attempt. Keys have no expiry
 in this prototype, so clients should generate a unique key per intended run.
 
@@ -188,6 +189,8 @@ HTTP 422 validation, 404 missing run/fixture, 409 conflicting idempotency key,
 active runs, 503 worker unavailable. Errors use `{ "error": { "code": "...",
 "message": "..." } }`, with safe field details for validation errors. Worker
 failures use run status `failed` and safe `RUN_FAILED` errors in GET results.
+Allowed-origin CORS headers also apply to guard-generated errors. Duplicate
+X-API-Key headers fail authentication when the key gate is enabled.
 Unknown routes use FastAPI's standard 404 shape. Infrastructure/storage
 errors are not disguised as successful runs.
 
@@ -197,10 +200,67 @@ errors are not disguised as successful runs.
 `create_app(..., runner=your_runner)` injects an adapter for integration tests.
 The service owns scheduling, persistence, status and regression evaluation;
 the adapter owns interpretation, policy-gated tools and external execution.
+The current result/evidence schema still only accepts mock execution. A real
+adapter requires explicit provider/result schema changes and team verification.
 Do not invoke a teammate file blindly: the current agent is a scaffold,
 `ProposedAction.amount` is a float in rupees, and `deny_request` is a proposal,
 not an ArmorIQ blocked decision. Add explicit validated unit conversion and
 map the agent result to a real policy/MCP execution flow when it is ready.
+
+### Required mock adapter contract
+
+`RunResult` is strict and rejects unknown fields. `reason` must be nonblank
+and at most 1000 characters. `amount_minor` must be a strict integer from
+0 through 10000000 for `issue_refund` (never a boolean, float or null).
+`change_account_email` must use null for the amount. These are structural
+checks, not authorization. The backend resets adapter-supplied regression
+metadata and computes the fixture IDs and replay verdict itself.
+
+Emit these core events exactly once and in this order. `tool_read` and other
+bounded diagnostic events may appear between them:
+
+| Kind | Required `data` |
+| --- | --- |
+| `action_proposed` | `action`; refund `amount_minor` matching result |
+| `policy_decision` | `provider: "mock"`, `decision` matching result |
+| `tool_executed` OR `tool_blocked` | `tool` matching result action; allowed execution also needs matching `amount_minor` |
+| `state_verified` | `state_before`, `state_after`, `state_mutated` matching result |
+
+An allowed decision requires `tool_executed`; a blocked decision requires
+`tool_blocked` and unchanged snapshots. Missing/duplicate/out-of-order core
+events or payload contradictions cause safe execution failure, not a passing
+security test. The before/after mutation flag is checked separately too.
+This is **internal consistency of adapter claims**, not independent proof of
+external execution, rollback or real authorization.
+
+Adapter events are accepted only while the run is running, with at most 128
+events per run. `kind` is 1-80 characters; `message` is 1-1000 characters;
+`data` is a dictionary, at most 32 KiB of canonical UTF-8 JSON per event.
+Data and result snapshots must be finite JSON with string object keys and
+at most 20 nesting levels. Combined result snapshots are limited to 64 KiB.
+Canonical JSON comparisons distinguish `true`, `1` and `1.0`.
+
+`run_failed` is reserved for the backend. Failure and restart recovery
+atomically append one safe terminal event, with one reserved slot beyond
+the adapter budget (maximum 129 events). Prior evidence remains diagnostic;
+a policy event in a failed run is not a completed result. Repeat failure or
+recovery does not add duplicate markers. Completed/failed runs reject late
+adapter events. A failed run has null result and no new regression fixture.
+
+Replay loads the original completed blocked source result inside the same
+transaction and compares action, amount, currency and full baseline snapshot,
+in addition to blocked decision and unchanged state. This full-baseline rule
+fits the isolated deterministic mock. Future tools with changing baselines
+need explicit invariant definitions rather than blindly reusing this rule.
+Coherent semantic drift completes with `regression_passed: false`; missing,
+invalid or non-blocked source results fail safely instead. Keep source results
+and regression fixtures together when backing up the database.
+
+Graceful shutdown waits for adapter threads and always attempts executor
+cleanup. Threads cannot safely cancel an external mutation: a custom adapter
+that never returns can still delay shutdown. This prototype has no runner
+timeout or cancellation guarantee. Restart recovery fails interrupted runs;
+it does not repeat their actions automatically.
 
 Before replacing the mock for a real demo:
 
