@@ -465,3 +465,40 @@ def test_worker_start_failure_is_terminal(tmp_path, monkeypatch):
         assert data['status'] == 'failed'
         assert data['evidence'][-1]['kind'] == 'run_failed'
         assert 'private start' not in str(data)
+
+
+@pytest.mark.parametrize('case,status', [('auth',401), ('body',413), ('duplicate',422)])
+def test_cors_applies_to_guard_errors(tmp_path, case, status):
+    with TestClient(create_app(str(tmp_path/'cors.db'), api_key='test-key')) as c:
+        headers = [('Origin','http://localhost:5173')]
+        if case != 'auth': headers.append(('X-API-Key','test-key'))
+        if case == 'duplicate': headers += [('Idempotency-Key','a'),('Idempotency-Key','b')]
+        response = c.post('/runs', content='x'*70000 if case == 'body' else '{}', headers=headers)
+        assert response.status_code == status
+        assert response.headers['access-control-allow-origin'] == 'http://localhost:5173'
+        assert c.get('/runs',headers={'X-API-Key':'test-key'}).json()['total'] == 0
+
+
+@pytest.mark.parametrize('values', [('a','b'),('same','same')])
+def test_duplicate_idempotency_rejected(client, values):
+    response = client.post('/runs', json={'scenario_id':'allowed_refund'},
+                           headers=[('Idempotency-Key', value) for value in values])
+    assert response.status_code == 422
+    assert client.get('/runs').json()['total'] == 0
+
+
+def test_duplicate_api_keys_fail_closed(tmp_path):
+    with TestClient(create_app(str(tmp_path/'duplicate-key.db'),api_key='correct')) as c:
+        response = c.get('/scenarios',headers=[('X-API-Key','correct'),('X-API-Key','wrong')])
+        assert response.status_code == 401
+
+
+def test_chunked_body_preserved_and_limited(client):
+    def chunks():
+        yield b'{"scenario_id":'
+        yield b'"allowed_refund"}'
+    response = client.post('/runs',content=chunks(),headers={'Content-Type':'application/json'})
+    assert response.status_code == 202
+    def oversized():
+        for _ in range(70): yield b'x'*1024
+    assert client.post('/runs', content=oversized()).status_code == 413
