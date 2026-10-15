@@ -407,3 +407,61 @@ def test_bool_amount_cannot_equal_integer_evidence(tmp_path):
             return super().execute(run_id, inputs, altered)
     with TestClient(create_app(str(tmp_path/'bool.db'), runner=BooleanEvidence())) as c:
         assert run(c, {'scenario_id':'allowed_refund','amount_minor':1})['status'] == 'failed'
+
+
+def test_partial_failure_preserves_trace_and_terminal_marker(tmp_path):
+    class PartialRunner:
+        def execute(self, run_id, inputs, emit):
+            emit('policy_decision', 'Partial mock decision', {'provider':'mock','decision':'allowed'})
+            raise RuntimeError('SECRET exception text')
+    with TestClient(create_app(str(tmp_path/'partial.db'), runner=PartialRunner())) as c:
+        data = run(c, {'scenario_id':'allowed_refund'})
+        assert data['status'] == 'failed' and data['result'] is None
+        assert [e['kind'] for e in data['evidence']] == ['policy_decision','run_failed']
+        assert data['evidence'][-1]['data'] == {'code':'RUN_FAILED'}
+        assert 'SECRET' not in str(data)
+
+
+def test_failure_and_recovery_markers_are_idempotent(tmp_path):
+    store = Store(str(tmp_path/'markers.db'))
+    first, _ = store.create(RunInput(scenario_id='allowed_refund'))
+    assert store.fail(first)
+    assert not store.fail(first)
+    second, _ = store.create(RunInput(scenario_id='allowed_refund'))
+    store.start(second)
+    store.emit(second, 'custom', 'Partial evidence', {})
+    store.recover()
+    snapshot = store.get(second)
+    store.recover()
+    assert store.get(second) == snapshot
+    assert snapshot['evidence'][-1]['data']['code'] == 'RUN_INTERRUPTED'
+    assert len(store.get(first)['evidence']) == 1
+
+
+def test_lifespan_always_shuts_executor_down(tmp_path, monkeypatch):
+    import asyncio
+    import importlib
+    main = importlib.import_module('app.main')
+    calls = []
+    class Executor:
+        def __init__(self, **kwargs): pass
+        def shutdown(self, **kwargs): calls.append(kwargs)
+    monkeypatch.setattr(main, 'ThreadPoolExecutor', Executor)
+    app = main.create_app(str(tmp_path/'shutdown.db'))
+    async def exercise():
+        with pytest.raises(RuntimeError, match='lifespan error'):
+            async with app.router.lifespan_context(app):
+                raise RuntimeError('lifespan error')
+    asyncio.run(exercise())
+    assert calls == [{'wait':True}]
+
+
+def test_worker_start_failure_is_terminal(tmp_path, monkeypatch):
+    app = create_app(str(tmp_path/'start-fail.db'))
+    with TestClient(app) as c:
+        def bad_start(run_id): raise RuntimeError('private start failure')
+        monkeypatch.setattr(app.state.store, 'start', bad_start)
+        data = run(c, {'scenario_id':'allowed_refund'})
+        assert data['status'] == 'failed'
+        assert data['evidence'][-1]['kind'] == 'run_failed'
+        assert 'private start' not in str(data)
