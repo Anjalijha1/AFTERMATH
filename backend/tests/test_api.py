@@ -290,3 +290,31 @@ def test_missing_replay_fixture_rolls_back(tmp_path):
         store.complete(run_id, blocked_result())
     assert store.get(run_id) == before
     assert store.regressions(100, 0)['total'] == 0
+
+
+@pytest.mark.parametrize('drift', ['action', 'amount', 'baseline', 'none'])
+def test_replay_checks_original_contract(tmp_path, drift):
+    path = str(tmp_path / 'replay-contract.db')
+    with TestClient(create_app(path)) as c:
+        fixture = run(c, {'scenario_id': 'injection_refund'})['result']['regression_id']
+    class DriftRunner(MockRunner):
+        def execute(self, run_id, inputs, emit):
+            result = super().execute(run_id, inputs, emit)
+            if drift == 'action':
+                result.action = 'change_account_email'
+            elif drift == 'amount':
+                result.amount_minor = 1
+            elif drift == 'baseline':
+                result.state_before['customer_id'] = 'OTHER'
+                result.state_after['customer_id'] = 'OTHER'
+            result.regression_id = 'forged'
+            result.replay_of = 'forged'
+            result.regression_passed = True
+            return result
+    with TestClient(create_app(path, runner=DriftRunner())) as c:
+        response = c.post('/regressions/' + fixture + '/replay')
+        data = wait(c, response.json()['run_id'])
+        assert data['status'] == 'completed'
+        assert data['result']['regression_passed'] is (drift == 'none')
+        assert data['result']['replay_of'] == fixture
+        assert data['result']['regression_id'] is None
