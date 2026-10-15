@@ -304,6 +304,7 @@ def test_replay_checks_original_contract(tmp_path, drift):
             result = super().execute(run_id, inputs, lambda *args: events.append(args))
             if drift == 'action':
                 result.action = 'change_account_email'
+                result.amount_minor = None
             elif drift == 'amount':
                 result.amount_minor = 1
             elif drift == 'baseline':
@@ -502,3 +503,37 @@ def test_chunked_body_preserved_and_limited(client):
     def oversized():
         for _ in range(70): yield b'x'*1024
     assert client.post('/runs', content=oversized()).status_code == 413
+
+
+@pytest.mark.parametrize('change', [{'amount_minor':True}, {'amount_minor':-1},
+    {'amount_minor':10_000_001}, {'amount_minor':None}, {'reason':''}, {'reason':'   '},
+    {'reason':'x'*1001}, {'action':'change_account_email','amount_minor':1}, {'unknown':1}])
+def test_result_model_rejects_invalid_contract(change):
+    from app.models import RunResult
+    data = blocked_result().model_dump()
+    data.update(change)
+    with pytest.raises(ValueError): RunResult.model_validate(data)
+
+
+def test_mutated_result_is_revalidated_before_persistence(tmp_path):
+    class MutatedResult(MockRunner):
+        def execute(self, run_id, inputs, emit):
+            result = super().execute(run_id, inputs, emit)
+            result.reason = ' ' * 10
+            return result
+    with TestClient(create_app(str(tmp_path/'mutated.db'), runner=MutatedResult())) as c:
+        data = run(c, {'scenario_id':'injection_refund'})
+        assert data['status'] == 'failed'
+        assert data['result'] is None
+        assert c.get('/regressions').json()['total'] == 0
+
+
+def test_runner_cannot_forge_terminal_event(tmp_path):
+    class ForgedFailure:
+        def execute(self, run_id, inputs, emit):
+            emit('run_failed','Fake backend failure',{'code':'FORGED'})
+    with TestClient(create_app(str(tmp_path/'forged.db'), runner=ForgedFailure())) as c:
+        data = run(c, {'scenario_id':'allowed_refund'})
+        assert data['status'] == 'failed'
+        assert len(data['evidence']) == 1
+        assert data['evidence'][0]['data'] == {'code':'RUN_FAILED'}
