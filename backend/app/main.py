@@ -34,24 +34,25 @@ def create_app(db_path=None, runner: Runner | None = None, api_key=None):
     app = FastAPI(title='AFTERMATH Backend', version='0.1.0', lifespan=lifespan,
                   description='Member 1 backend. Mock sandbox only. No real ArmorIQ, MCP or LLM integration.')
     app.state.store = store
-    app.add_middleware(CORSMiddleware,
-                       allow_origins=[s.strip() for s in os.getenv('AFTERMATH_CORS_ORIGINS', 'http://localhost:5173').split(',') if s.strip()],
-                       allow_methods=['GET', 'POST'], allow_headers=['Content-Type', 'X-API-Key', 'Idempotency-Key'])
-
     @app.middleware('http')
     async def guard(request: Request, call_next):
         if key and request.url.path != '/health' and request.method != 'OPTIONS':
-            supplied = request.headers.get('x-api-key', '')
+            supplied_keys = request.headers.getlist('x-api-key')
+            supplied = supplied_keys[0] if len(supplied_keys) == 1 else ''
             if not secrets.compare_digest(supplied.encode(), key.encode()):
                 return JSONResponse(status_code=401, content={'error': {'code': 'UNAUTHORIZED', 'message': 'Valid X-API-Key required.'}})
         if request.method == 'POST':
+            if len(request.headers.getlist('idempotency-key')) > 1:
+                return JSONResponse(status_code=422, content={'error': {'code': 'INVALID_IDEMPOTENCY_KEY', 'message': 'Send exactly one Idempotency-Key header.'}})
             size = 0
+            chunks = []
             async for chunk in request.stream():
                 size += len(chunk)
                 if size > 65_536:
                     return JSONResponse(status_code=413, content={'error': {'code': 'BODY_TOO_LARGE', 'message': 'Maximum request body is 64 KiB.'}})
                 # Preserve body for the downstream request parser.
-                request._body = getattr(request, '_body', b'') + chunk
+                chunks.append(chunk)
+            request._body = b''.join(chunks)
         return await call_next(request)
 
     @app.exception_handler(HTTPException)
@@ -143,6 +144,11 @@ def create_app(db_path=None, runner: Runner | None = None, api_key=None):
         if fixture is None:
             missing('REGRESSION_NOT_FOUND', 'No regression exists with this ID.')
         return submit(RunInput.model_validate(fixture['input']), idempotency_key, replay_of=regression_id)
+
+    # Outermost user middleware so guard-generated 401/413/422 responses get CORS.
+    app.add_middleware(CORSMiddleware,
+                       allow_origins=[s.strip() for s in os.getenv('AFTERMATH_CORS_ORIGINS', 'http://localhost:5173').split(',') if s.strip()],
+                       allow_methods=['GET', 'POST'], allow_headers=['Content-Type', 'X-API-Key', 'Idempotency-Key'])
 
     return app
 
