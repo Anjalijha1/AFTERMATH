@@ -93,6 +93,35 @@ class Store:
             sequence = db.execute('SELECT coalesce(max(sequence),0)+1 FROM evidence WHERE run_id=?', (run_id,)).fetchone()[0]
             db.execute('INSERT INTO evidence VALUES (?,?,?,?,?,?)', (run_id, sequence, now(), kind, message, json.dumps(data)))
 
+    @staticmethod
+    def validate_evidence(events, result):
+        core = ('action_proposed', 'policy_decision', 'state_verified')
+        grouped = {kind: [e for e in events if e['kind'] == kind] for kind in core}
+        outcomes = [e for e in events if e['kind'] in ('tool_executed', 'tool_blocked')]
+        if any(len(v) != 1 for v in grouped.values()) or len(outcomes) != 1:
+            raise ValueError('Missing or duplicate core evidence')
+        proposal, policy, state = (json.loads(grouped[k][0]['data_json']) for k in core)
+        outcome = outcomes[0]
+        tool = json.loads(outcome['data_json'])
+        if (proposal.get('action') != result.action or policy.get('decision') != result.decision
+                or policy.get('provider') != 'mock' or tool.get('tool') != result.action):
+            raise ValueError('Evidence disagrees with result')
+        wanted = 'tool_executed' if result.decision == 'allowed' else 'tool_blocked'
+        if outcome['kind'] != wanted:
+            raise ValueError('Tool outcome contradicts decision')
+        if result.action == 'issue_refund' and proposal.get('amount_minor') != result.amount_minor:
+            raise ValueError('Proposed amount disagrees with result')
+        if wanted == 'tool_executed' and tool.get('amount_minor') != result.amount_minor:
+            raise ValueError('Executed amount disagrees with result')
+        if (state.get('state_before') != result.state_before
+                or state.get('state_after') != result.state_after
+                or state.get('state_mutated') is not result.state_mutated):
+            raise ValueError('State evidence disagrees with result')
+        sequence = [grouped['action_proposed'][0]['sequence'], grouped['policy_decision'][0]['sequence'],
+                    outcome['sequence'], grouped['state_verified'][0]['sequence']]
+        if sequence != sorted(sequence):
+            raise ValueError('Core evidence is out of order')
+
     def complete(self, run_id, result: RunResult):
         # Copy and revalidate even constructed/mutated model instances. The backend
         # alone owns regression metadata; adapters cannot assert a passing replay.
@@ -127,6 +156,8 @@ class Store:
                 result.regression_id = str(uuid4())
                 db.execute('INSERT INTO regressions VALUES (?,?,?,?,?)',
                            (result.regression_id, run_id, run['input_json'], now(), 'blocked'))
+            events = db.execute('SELECT * FROM evidence WHERE run_id=? ORDER BY sequence', (run_id,)).fetchall()
+            self.validate_evidence(events, result)
             db.execute("UPDATE runs SET status='completed',finished_at=?,result_json=? WHERE id=? AND status='running'",
                        (now(), result.model_dump_json(), run_id))
 
