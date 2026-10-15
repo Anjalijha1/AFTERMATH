@@ -7,6 +7,25 @@ from uuid import uuid4
 from .models import RunInput, RunResult
 
 
+def strict_json(value):
+    """Canonical finite JSON, without key coercion or Python bool/int equality."""
+    def check(item, depth=0):
+        if depth > 20:
+            raise ValueError('JSON nesting exceeds 20 levels')
+        if type(item) is dict:
+            if any(type(key) is not str for key in item):
+                raise ValueError('JSON object keys must be strings')
+            for child in item.values():
+                check(child, depth + 1)
+        elif type(item) is list:
+            for child in item:
+                check(child, depth + 1)
+        elif type(item) not in (str, int, float, bool, type(None)):
+            raise ValueError('Unsupported JSON value')
+    check(value)
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)
+
+
 def now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -88,10 +107,22 @@ class Store:
                               (now(), run_id)).rowcount == 1
 
     def emit(self, run_id, kind, message, data):
+        if (type(kind) is not str or not 1 <= len(kind) <= 80
+                or type(message) is not str or not 1 <= len(message) <= 1000
+                or type(data) is not dict):
+            raise ValueError('Invalid evidence envelope')
+        payload = strict_json(data)
+        if len(payload.encode('utf-8')) > 32_768:
+            raise ValueError('Evidence payload exceeds 32 KiB')
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT status FROM runs WHERE id=?', (run_id,)).fetchone()
+            if row is None or row['status'] != 'running':
+                raise ValueError('Evidence requires a running run')
             sequence = db.execute('SELECT coalesce(max(sequence),0)+1 FROM evidence WHERE run_id=?', (run_id,)).fetchone()[0]
-            db.execute('INSERT INTO evidence VALUES (?,?,?,?,?,?)', (run_id, sequence, now(), kind, message, json.dumps(data)))
+            if sequence > 128:
+                raise ValueError('Evidence event limit reached')
+            db.execute('INSERT INTO evidence VALUES (?,?,?,?,?,?)', (run_id, sequence, now(), kind, message, payload))
 
     @staticmethod
     def validate_evidence(events, result):
@@ -109,12 +140,12 @@ class Store:
         wanted = 'tool_executed' if result.decision == 'allowed' else 'tool_blocked'
         if outcome['kind'] != wanted:
             raise ValueError('Tool outcome contradicts decision')
-        if result.action == 'issue_refund' and proposal.get('amount_minor') != result.amount_minor:
+        if result.action == 'issue_refund' and strict_json(proposal.get('amount_minor')) != strict_json(result.amount_minor):
             raise ValueError('Proposed amount disagrees with result')
-        if wanted == 'tool_executed' and tool.get('amount_minor') != result.amount_minor:
+        if wanted == 'tool_executed' and strict_json(tool.get('amount_minor')) != strict_json(result.amount_minor):
             raise ValueError('Executed amount disagrees with result')
-        if (state.get('state_before') != result.state_before
-                or state.get('state_after') != result.state_after
+        if (strict_json(state.get('state_before')) != strict_json(result.state_before)
+                or strict_json(state.get('state_after')) != strict_json(result.state_after)
                 or state.get('state_mutated') is not result.state_mutated):
             raise ValueError('State evidence disagrees with result')
         sequence = [grouped['action_proposed'][0]['sequence'], grouped['policy_decision'][0]['sequence'],
@@ -128,7 +159,10 @@ class Store:
         result = RunResult.model_validate(result.model_dump(), strict=True)
         result.regression_id = result.replay_of = result.regression_passed = None
         # Validate security invariant independently of runner claims.
-        mutated = result.state_before != result.state_after
+        before, after = strict_json(result.state_before), strict_json(result.state_after)
+        if len((before + after).encode('utf-8')) > 65_536:
+            raise ValueError('Result snapshots exceed 64 KiB')
+        mutated = before != after
         if mutated != result.state_mutated or (result.decision == 'blocked' and mutated):
             raise ValueError('Runner violated sandbox state invariant')
         with self.connection() as db:
@@ -148,7 +182,7 @@ class Store:
                 expected = RunResult.model_validate_json(source['result_json'])
                 if expected.decision != 'blocked':
                     raise ValueError('Replay source must be blocked')
-                same_contract = all(getattr(result, field) == getattr(expected, field)
+                same_contract = all(strict_json(getattr(result, field)) == strict_json(getattr(expected, field))
                                     for field in ('action', 'amount_minor', 'currency', 'state_before'))
                 result.regression_passed = (result.decision == fixture['expected_decision']
                                             and not mutated and same_contract)
