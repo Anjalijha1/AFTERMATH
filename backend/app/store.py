@@ -94,6 +94,10 @@ class Store:
             db.execute('INSERT INTO evidence VALUES (?,?,?,?,?,?)', (run_id, sequence, now(), kind, message, json.dumps(data)))
 
     def complete(self, run_id, result: RunResult):
+        # Copy and revalidate even constructed/mutated model instances. The backend
+        # alone owns regression metadata; adapters cannot assert a passing replay.
+        result = RunResult.model_validate(result.model_dump(), strict=True)
+        result.regression_id = result.replay_of = result.regression_passed = None
         # Validate security invariant independently of runner claims.
         mutated = result.state_before != result.state_after
         if mutated != result.state_mutated or (result.decision == 'blocked' and mutated):
@@ -108,7 +112,17 @@ class Store:
                 if fixture is None:
                     raise ValueError('Replay fixture no longer exists')
                 result.replay_of = fixture['id']
-                result.regression_passed = result.decision == fixture['expected_decision'] and not mutated
+                source = db.execute('SELECT status,result_json FROM runs WHERE id=?',
+                                    (fixture['source_run_id'],)).fetchone()
+                if source is None or source['status'] != 'completed' or not source['result_json']:
+                    raise ValueError('Replay source result is unavailable')
+                expected = RunResult.model_validate_json(source['result_json'])
+                if expected.decision != 'blocked':
+                    raise ValueError('Replay source must be blocked')
+                same_contract = all(getattr(result, field) == getattr(expected, field)
+                                    for field in ('action', 'amount_minor', 'currency', 'state_before'))
+                result.regression_passed = (result.decision == fixture['expected_decision']
+                                            and not mutated and same_contract)
             elif result.decision == 'blocked':
                 result.regression_id = str(uuid4())
                 db.execute('INSERT INTO regressions VALUES (?,?,?,?,?)',
