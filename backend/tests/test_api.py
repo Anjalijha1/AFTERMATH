@@ -256,3 +256,37 @@ def test_whitespace_ticket_rejected(client):
     r = client.post('/runs', json={'scenario_id':'allowed_refund', 'ticket':'   \t\n'})
     assert r.status_code == 422
     assert client.get('/runs').json()['total'] == 0
+
+
+def blocked_result():
+    return MockRunner().execute('test', RunInput(scenario_id='injection_refund'), lambda *args: None)
+
+
+@pytest.mark.parametrize('status', ['missing', 'queued', 'failed', 'completed'])
+def test_completion_requires_running_row(tmp_path, status):
+    store = Store(str(tmp_path / 'store.db'))
+    run_id = 'missing'
+    if status != 'missing':
+        run_id, _ = store.create(RunInput(scenario_id='injection_refund'))
+        if status == 'failed':
+            store.fail(run_id)
+        elif status == 'completed':
+            store.start(run_id)
+            store.complete(run_id, blocked_result())
+    before = store.get(run_id)
+    fixtures = store.regressions(100, 0)
+    with pytest.raises(ValueError, match='running run'):
+        store.complete(run_id, blocked_result())
+    assert store.get(run_id) == before
+    assert store.regressions(100, 0) == fixtures
+
+
+def test_missing_replay_fixture_rolls_back(tmp_path):
+    store = Store(str(tmp_path / 'store.db'))
+    run_id, _ = store.create(RunInput(scenario_id='injection_refund'), replay_of='missing')
+    store.start(run_id)
+    before = store.get(run_id)
+    with pytest.raises(ValueError, match='fixture'):
+        store.complete(run_id, blocked_result())
+    assert store.get(run_id) == before
+    assert store.regressions(100, 0)['total'] == 0
