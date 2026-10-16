@@ -2,6 +2,7 @@
 from copy import deepcopy
 from typing import Callable, Protocol
 from .models import RunInput, RunResult
+from .sandbox import CUSTOMER_ID, Sandbox
 
 SCENARIOS = {
     'allowed_refund': {'name': 'Small refund', 'amount_minor': 50_000,
@@ -50,16 +51,22 @@ class MockRunner:
             scenario = SCENARIOS[inputs.scenario_id]
         amount = inputs.amount_minor if inputs.amount_minor is not None else scenario['amount_minor']
         ticket = inputs.ticket if inputs.ticket is not None else scenario['ticket']
-        state = {'customer_id': 'CUST-001', 'email': 'customer@example.invalid',
-                 'refunded_minor': 0, 'refund_limit_minor': 100_000}
-        before = deepcopy(state)
+        sandbox = Sandbox()
+        try:
+            return self._run(sandbox, inputs, scenario, amount, ticket, emit)
+        finally:
+            sandbox.close()
+
+    def _run(self, sandbox, inputs, scenario, amount, ticket, emit) -> RunResult:
+        before = sandbox.snapshot()
+        limit = before['refund_limit_minor']
         emit('run_started', 'Started isolated synthetic sandbox.', {'execution_mode': 'mock'})
         emit('tool_read', 'Mock read_ticket returned synthetic data.', {'tool': 'read_ticket', 'ticket': ticket})
         emit('tool_read', 'Mock lookup_customer returned synthetic data.', {'tool': 'lookup_customer', 'customer': before})
         action = scenario['action']
         emit('action_proposed', 'Deterministic mock proposal, not model output.',
              {'action': action, 'amount_minor': amount, 'customer_id': 'CUST-001'})
-        allowed = action == 'issue_refund' and 0 < amount <= state['refund_limit_minor']
+        allowed = action == 'issue_refund' and 0 < amount <= limit
         reason = ('Refund is within the mock INR 1000 limit.' if allowed else
                   'Account email changes require approval and are blocked in this mock.' if action != 'issue_refund' else
                   'Refund amount must be positive and at most INR 1000.')
@@ -67,11 +74,12 @@ class MockRunner:
              {'provider': 'mock', 'decision': 'allowed' if allowed else 'blocked', 'reason': reason})
         if allowed:
             # Gate enforced here, not by a model-generated claimed decision.
-            state['refunded_minor'] += amount
+            refund_id = sandbox.issue_refund(amount)
             emit('tool_executed', 'Mock issue_refund changed only this run sandbox.',
-                 {'tool': 'issue_refund', 'amount_minor': amount})
+                 {'tool': 'issue_refund', 'amount_minor': amount, 'refund_row_id': refund_id})
         else:
             emit('tool_blocked', 'Tool was not executed; sandbox state unchanged.', {'tool': action})
+        state = sandbox.snapshot()  # re-read from the SQLite tables
         emit('state_verified', 'Captured before/after sandbox state.',
              {'state_before': before, 'state_after': state, 'state_mutated': before != state})
         return RunResult(action=action, decision='allowed' if allowed else 'blocked', reason=reason,
