@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 def create_app(db_path=None, runner: Runner | None = None, api_key=None):
     store = Store(db_path or os.getenv('AFTERMATH_DB_PATH', './data/aftermath.db'))
-    adapter = runner or MockRunner()
+    adapter = runner or MockRunner(int(os.getenv('AFTERMATH_REFUND_LIMIT_MINOR', '100000')))
     if isinstance(adapter, MockRunner):
         adapter.scenario_lookup = store.get_scenario
     key = api_key if api_key is not None else os.getenv('AFTERMATH_API_KEY', '')
@@ -115,7 +115,8 @@ def create_app(db_path=None, runner: Runner | None = None, api_key=None):
     def health():
         with store.connection() as db:
             db.execute('SELECT 1')
-        return {'status': 'ok', 'execution_mode': 'mock', 'real_armoriq': False}
+        return {'status': 'ok', 'execution_mode': 'mock', 'real_armoriq': False,
+                'mock_refund_limit_minor': getattr(adapter, 'refund_limit_minor', None)}
 
     @route('GET', '/scenarios')
     def scenarios():
