@@ -74,6 +74,15 @@ authorization, rate limits and tenant isolation before it is safe.
 All money uses integer **INR minor units (paise)**: `50000` means INR 500,
 `100000` means INR 1000. Never send `500` expecting INR 500.
 
+### Design-doc API paths (Round 1)
+
+Every route is available as `/api/...` (documented in `/docs`) and under the old
+path without `/api` (kept so the existing frontend does not break). New:
+`GET /api/runs/{run_id}/events` (same data as `/evidence`). Each evidence item now
+also has `event_type` with the design-doc name (`agent_action_proposed`,
+`authorization_allowed`, `authorization_denied`, `tool_executed`, `state_verified`);
+the old `kind` is unchanged. `event_type` is `null` where the doc has no name.
+
 ### Start a run
 
 ```sh
