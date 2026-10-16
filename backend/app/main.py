@@ -73,6 +73,10 @@ def create_app(db_path=None, runner: Runner | None = None, api_key=None):
             return fn
         return deco
 
+    def api_prefix(request):
+        # Links keep the prefix the client used: /api clients get /api links, old clients old links.
+        return '/api' if request.url.path.startswith('/api/') else ''
+
     def missing(code, message):
         raise HTTPException(404, detail={'code': code, 'message': message})
 
@@ -86,7 +90,7 @@ def create_app(db_path=None, runner: Runner | None = None, api_key=None):
             logger.exception('Run failed: %s', run_id)
             store.fail(run_id)
 
-    def submit(inputs, idempotency_key, replay_of=None):
+    def submit(inputs, idempotency_key, replay_of=None, prefix=''):
         if idempotency_key is not None and not re.fullmatch(r'[A-Za-z0-9._:-]{1,128}', idempotency_key):
             raise HTTPException(422, detail={'code': 'INVALID_IDEMPOTENCY_KEY', 'message': 'Key must be 1-128 ASCII letters, digits, dot, underscore, colon or dash.'})
         try:
@@ -101,7 +105,7 @@ def create_app(db_path=None, runner: Runner | None = None, api_key=None):
             except Exception:
                 store.fail(run_id)
                 raise HTTPException(503, detail={'code': 'WORKER_UNAVAILABLE', 'message': 'Run worker unavailable.'})
-        return RunAccepted(run_id=run_id, status=store.get(run_id)['status'], status_url=f'/runs/{run_id}')
+        return RunAccepted(run_id=run_id, status=store.get(run_id)['status'], status_url=f'{prefix}/runs/{run_id}')
 
     @route('GET', '/health')
     def health():
@@ -114,8 +118,8 @@ def create_app(db_path=None, runner: Runner | None = None, api_key=None):
         return {'execution_mode': 'mock', 'items': [{'scenario_id': k, **v} for k, v in SCENARIOS.items()]}
 
     @route('POST', '/runs', response_model=RunAccepted, status_code=202)
-    def start_run(inputs: RunInput, idempotency_key: str | None = Header(default=None)):
-        return submit(inputs, idempotency_key)
+    def start_run(request: Request, inputs: RunInput, idempotency_key: str | None = Header(default=None)):
+        return submit(inputs, idempotency_key, prefix=api_prefix(request))
 
     @route('GET', '/runs')
     def list_runs(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0, le=100_000)):
@@ -152,11 +156,11 @@ def create_app(db_path=None, runner: Runner | None = None, api_key=None):
         return fixture
 
     @route('POST', '/regressions/{regression_id}/replay', response_model=RunAccepted, status_code=202)
-    def replay(regression_id: str, idempotency_key: str | None = Header(default=None)):
+    def replay(request: Request, regression_id: str, idempotency_key: str | None = Header(default=None)):
         fixture = store.regression(regression_id)
         if fixture is None:
             missing('REGRESSION_NOT_FOUND', 'No regression exists with this ID.')
-        return submit(RunInput.model_validate(fixture['input']), idempotency_key, replay_of=regression_id)
+        return submit(RunInput.model_validate(fixture['input']), idempotency_key, replay_of=regression_id, prefix=api_prefix(request))
 
     # Outermost user middleware so guard-generated 401/413/422 responses get CORS.
     app.add_middleware(CORSMiddleware,
