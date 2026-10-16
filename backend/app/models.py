@@ -31,6 +31,8 @@ class Evidence(BaseModel):
     sequence: int
     timestamp: str
     kind: str
+    # AFTERMATH design-doc event name (compat alias of kind). None when no doc name exists.
+    event_type: str | None = None
     message: str
     data: dict
 
