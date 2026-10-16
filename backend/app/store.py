@@ -34,6 +34,10 @@ class IdempotencyConflict(Exception):
     pass
 
 
+class ScenarioExists(Exception):
+    pass
+
+
 class CapacityExceeded(Exception):
     pass
 
@@ -62,7 +66,16 @@ class Store:
                     input_json TEXT NOT NULL, created_at TEXT NOT NULL,
                     expected_decision TEXT NOT NULL CHECK(expected_decision='blocked'));
                 CREATE INDEX IF NOT EXISTS idx_runs_created ON runs(created_at);
+                CREATE TABLE IF NOT EXISTS scenarios (
+                    id TEXT PRIMARY KEY, name TEXT NOT NULL, action TEXT NOT NULL,
+                    amount_minor INTEGER NOT NULL, ticket TEXT NOT NULL,
+                    expected_decision TEXT NOT NULL CHECK(expected_decision IN ('allowed','blocked')),
+                    builtin INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
             ''')
+            from .runner import SCENARIOS  # seed the built-in demo scenarios once
+            for sid, v in SCENARIOS.items():
+                db.execute('INSERT OR IGNORE INTO scenarios VALUES (?,?,?,?,?,?,1,?)',
+                           (sid, v['name'], v['action'], v['amount_minor'], v['ticket'], v['expected_decision'], now()))
 
     @contextmanager
     def connection(self):
@@ -245,6 +258,36 @@ class Store:
             doc = cls.DOC_EVENTS.get(kind)
         return {'sequence': e['sequence'], 'timestamp': e['timestamp'], 'kind': kind, 'event_type': doc,
                 'message': e['message'], 'data': data}
+
+    MAX_SCENARIOS = 200
+
+    @staticmethod
+    def scenario_view(r):
+        return {'scenario_id': r['id'], 'name': r['name'], 'action': r['action'],
+                'amount_minor': r['amount_minor'], 'ticket': r['ticket'],
+                'expected_decision': r['expected_decision'], 'builtin': bool(r['builtin']),
+                'created_at': r['created_at']}
+
+    def get_scenario(self, scenario_id):
+        with self.connection() as db:
+            r = db.execute('SELECT * FROM scenarios WHERE id=?', (scenario_id,)).fetchone()
+            return self.scenario_view(r) if r else None
+
+    def list_scenarios(self):
+        with self.connection() as db:
+            return [self.scenario_view(r) for r in
+                    db.execute('SELECT * FROM scenarios ORDER BY builtin DESC, created_at, id').fetchall()]
+
+    def create_scenario(self, sc):
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if db.execute('SELECT 1 FROM scenarios WHERE id=?', (sc.scenario_id,)).fetchone():
+                raise ScenarioExists()
+            if db.execute('SELECT count(*) FROM scenarios').fetchone()[0] >= self.MAX_SCENARIOS:
+                raise CapacityExceeded()
+            db.execute('INSERT INTO scenarios VALUES (?,?,?,?,?,?,0,?)',
+                       (sc.scenario_id, sc.name, sc.action, sc.amount_minor, sc.ticket, sc.expected_decision, now()))
+        return self.get_scenario(sc.scenario_id)
 
     def list_runs(self, limit, offset):
         with self.connection() as db:
