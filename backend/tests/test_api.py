@@ -643,3 +643,12 @@ def test_api_key_guard_covers_api_prefix(tmp_path):
         assert c.get('/api/health').status_code == 200
         assert c.get('/api/runs').status_code == 401
         assert c.get('/api/runs', headers={'X-API-Key': 'k'}).status_code == 200
+
+
+def test_status_url_keeps_client_prefix(tmp_path):
+    with TestClient(create_app(str(tmp_path / 'd.db'))) as c:
+        new = c.post('/api/runs', json={'scenario_id': 'excessive_refund'}).json()
+        old = c.post('/runs', json={'scenario_id': 'excessive_refund'}).json()
+        assert new['status_url'] == '/api/runs/' + new['run_id']
+        assert old['status_url'] == '/runs/' + old['run_id']
+        assert c.get(new['status_url']).status_code == 200
