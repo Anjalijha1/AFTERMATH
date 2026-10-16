@@ -137,7 +137,7 @@ class Store:
                               (now(), run_id)).rowcount == 1
 
     def emit(self, run_id, kind, message, data):
-        if (type(kind) is not str or kind == 'run_failed' or not 1 <= len(kind) <= 80
+        if (type(kind) is not str or kind in ('run_failed', 'test_completed') or not 1 <= len(kind) <= 80
                 or type(message) is not str or not 1 <= len(message) <= 1000
                 or type(data) is not dict):
             raise ValueError('Invalid evidence envelope')
