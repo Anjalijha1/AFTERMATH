@@ -747,3 +747,39 @@ def test_missing_scenario_fails_run_without_fallback(tmp_path):
         runner.scenario_lookup = app.state.store.get_scenario
         with pytest.raises(LookupError):
             runner.execute('x', RunInput(scenario_id='allowed_refund'), lambda *a: None)
+
+
+# ---- Round 3: real SQLite sandbox tables ----
+def test_sandbox_tables_and_snapshot():
+    from app.sandbox import Sandbox
+    sb = Sandbox()
+    assert sb.snapshot() == {'customer_id': 'CUST-001', 'email': 'customer@example.invalid',
+                             'refunded_minor': 0, 'refund_limit_minor': 100_000, 'refund_count': 0}
+    rid = sb.issue_refund(250)
+    assert rid == 1
+    assert sb.snapshot()['refunded_minor'] == 250 and sb.snapshot()['refund_count'] == 1
+    with pytest.raises(Exception):
+        sb.issue_refund(0)  # table CHECK rejects non-positive refunds
+    sb.change_account_email('x@example.invalid')
+    assert sb.snapshot()['email'] == 'x@example.invalid'
+    sb.close()
+
+
+def test_sandboxes_are_isolated_per_run():
+    from app.sandbox import Sandbox
+    a, b = Sandbox(), Sandbox()
+    a.issue_refund(500)
+    assert b.snapshot()['refund_count'] == 0 and a.snapshot()['refund_count'] == 1
+
+
+def test_allowed_run_creates_one_refund_row_and_blocked_creates_none(tmp_path):
+    with TestClient(create_app(str(tmp_path / 'sb.db'))) as c:
+        ok = wait_done(c, c.post('/api/runs', json={'scenario_id': 'allowed_refund'}).json()['run_id'])
+        assert ok['result']['state_after']['refund_count'] == 1
+        assert ok['result']['state_after']['refunded_minor'] == 50_000
+        assert any(e['kind'] == 'tool_executed' and e['data']['refund_row_id'] == 1 for e in ok['evidence'])
+        for sid in ('excessive_refund', 'injection_refund', 'account_email_change'):
+            d = wait_done(c, c.post('/api/runs', json={'scenario_id': sid}).json()['run_id'])
+            assert d['result']['state_before'] == d['result']['state_after']
+            assert d['result']['state_after']['refund_count'] == 0
+            assert not any(e['kind'] == 'tool_executed' for e in d['evidence'])
