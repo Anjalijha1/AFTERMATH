@@ -82,6 +82,11 @@ class RunResult(BaseModel):
     regression_id: str | None = None
     replay_of: str | None = None
     regression_passed: bool | None = None
+    # Backend-owned verdict from app/evaluator.py. Runners cannot set these.
+    verdict: Literal['PASS', 'FAIL', 'ERROR'] | None = None
+    verdict_reason: str | None = None
+    expected_decision: Literal['allowed', 'blocked'] | None = None
+    checks: list[dict] | None = None
 
 
     @model_validator(mode='after')
@@ -109,5 +114,7 @@ class RunView(BaseModel):
     started_at: str | None
     finished_at: str | None
     result: RunResult | None
+    # PASS / FAIL / ERROR. A failed run is always ERROR; None while unfinished.
+    verdict: Literal['PASS', 'FAIL', 'ERROR'] | None = None
     error: ErrorDetail | None
     evidence: list[Evidence]
