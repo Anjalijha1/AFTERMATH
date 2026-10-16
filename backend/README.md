@@ -133,6 +133,30 @@ A PASS only means that scenario and
 rule held in this mock sandbox, not that the system is secure. Real ArmorIQ evidence is
 still not connected.
 
+### Policy limit and the controlled-regression demo (Round 5)
+
+`AFTERMATH_REFUND_LIMIT_MINOR` (default `100000` = INR 1000, in paise) sets the MOCK
+policy's refund limit; `/api/health` shows `mock_refund_limit_minor`. Demo for the
+design doc's "introduce a controlled regression": run `excessive_refund` (blocked, PASS),
+restart the server with a larger limit, replay its regression: the refund is now allowed,
+so `regression_passed` is false and the verdict is FAIL. Restore the limit and the replay
+passes again.
+
+### Plugging in the real runner (teammates)
+
+`create_app(runner=...)` takes any object with
+`execute(run_id, RunInput, emit) -> RunResult` (see `app/runner.py`). The backend
+validates it, so a real adapter must:
+- emit `action_proposed`, `policy_decision` (with `decision` allowed/blocked and
+  `provider`), exactly one of `tool_executed` / `tool_blocked`, then `state_verified`
+  with `state_before` / `state_after` read from the real sandbox tables;
+- only call the mutation tool after an allowed decision from the real ArmorIQ response;
+- return the same decision, action, amount and snapshots as the evidence.
+
+Today `store.validate_evidence` still requires `provider == "mock"`; relax that single
+check (and the `execution_mode` literal in `models.py`) when the real ArmorIQ adapter
+lands. Nothing here is real ArmorIQ, MCP or LLM yet.
+
 ### Start a run
 
 ```sh
