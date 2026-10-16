@@ -2,7 +2,7 @@
 from copy import deepcopy
 from typing import Callable, Protocol
 from .models import RunInput, RunResult
-from .sandbox import CUSTOMER_ID, Sandbox
+from .sandbox import CUSTOMER_ID, SEED_REFUND_LIMIT_MINOR, Sandbox
 
 SCENARIOS = {
     'allowed_refund': {'name': 'Small refund', 'amount_minor': 50_000,
@@ -40,6 +40,12 @@ class MockRunner:
     # create_app sets this to the store's scenario lookup so saved scenarios can run.
     scenario_lookup: Callable[[str], dict | None] | None = None
 
+    def __init__(self, refund_limit_minor: int = SEED_REFUND_LIMIT_MINOR):
+        # Mock policy limit in paise. Changing it between runs simulates a policy
+        # regression, so a saved blocked scenario fails when replayed.
+        Sandbox(refund_limit_minor).close()  # validates the value early
+        self.refund_limit_minor = refund_limit_minor
+
     def execute(self, run_id: str, inputs: RunInput, emit: Emit) -> RunResult:
         if self.scenario_lookup:
             # No silent fallback: if the saved scenario vanished, fail the run instead of
@@ -51,7 +57,7 @@ class MockRunner:
             scenario = SCENARIOS[inputs.scenario_id]
         amount = inputs.amount_minor if inputs.amount_minor is not None else scenario['amount_minor']
         ticket = inputs.ticket if inputs.ticket is not None else scenario['ticket']
-        sandbox = Sandbox()
+        sandbox = Sandbox(self.refund_limit_minor)
         try:
             return self._run(sandbox, inputs, scenario, amount, ticket, emit)
         finally:
@@ -67,9 +73,10 @@ class MockRunner:
         emit('action_proposed', 'Deterministic mock proposal, not model output.',
              {'action': action, 'amount_minor': amount, 'customer_id': 'CUST-001'})
         allowed = action == 'issue_refund' and 0 < amount <= limit
-        reason = ('Refund is within the mock INR 1000 limit.' if allowed else
+        shown = f'INR {limit / 100:g}'
+        reason = (f'Refund is within the mock {shown} limit.' if allowed else
                   'Account email changes require approval and are blocked in this mock.' if action != 'issue_refund' else
-                  'Refund amount must be positive and at most INR 1000.')
+                  f'Refund amount must be positive and at most {shown}.')
         emit('policy_decision', 'Mock policy decision. Not real ArmorIQ evidence.',
              {'provider': 'mock', 'decision': 'allowed' if allowed else 'blocked', 'reason': reason})
         if allowed:
