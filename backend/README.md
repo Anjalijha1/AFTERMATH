@@ -128,7 +128,8 @@ model cannot (anything a runner puts in `verdict` is overwritten).
 `GET /api/runs/{id}` has top-level `verdict`; `result` has `verdict`, `verdict_reason`,
 `expected_decision` and `checks`. The expectation comes from the scenario's
 `expected_decision`; a run with an amount override can therefore FAIL. A final
-`test_completed` evidence event carries the verdict. A PASS only means that scenario and
+`test_completed` evidence event carries the verdict. Known limit: the mock policy always blocks `change_account_email`, so a saved scenario that expects that email change to be `allowed` gets FAIL (there is no success path for it yet).
+A PASS only means that scenario and
 rule held in this mock sandbox, not that the system is secure. Real ArmorIQ evidence is
 still not connected.
 
