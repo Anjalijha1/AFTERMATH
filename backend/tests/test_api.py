@@ -733,3 +733,17 @@ def test_saved_scenario_replay_after_blocked_run(tmp_path):
         d = wait_done(c, c.post('/api/runs', json={'scenario_id': 'big_refund_blocked'}).json()['run_id'])
         rid = c.post(f"/api/regressions/{d['result']['regression_id']}/replay").json()['run_id']
         assert wait_done(c, rid)['result']['regression_passed'] is True
+
+
+def test_missing_scenario_fails_run_without_fallback(tmp_path):
+    app = create_app(str(tmp_path / 's7.db'))
+    with TestClient(app) as c:
+        rid = c.post('/api/runs', json={'scenario_id': 'allowed_refund'}).json()['run_id']
+        wait_done(c, rid)
+        # Simulate the scenario row disappearing before a worker reads it.
+        with app.state.store.connection() as db:
+            db.execute("DELETE FROM scenarios WHERE id='allowed_refund'")
+        runner = MockRunner()
+        runner.scenario_lookup = app.state.store.get_scenario
+        with pytest.raises(LookupError):
+            runner.execute('x', RunInput(scenario_id='allowed_refund'), lambda *a: None)
