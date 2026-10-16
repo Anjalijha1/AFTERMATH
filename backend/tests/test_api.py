@@ -873,3 +873,14 @@ def test_failed_run_verdict_is_error_and_runner_cannot_set_verdict(tmp_path):
     with TestClient(create_app(str(tmp_path / 'x.db'), runner=Boom())) as c:
         d = wait_done(c, c.post('/api/runs', json={'scenario_id': 'allowed_refund'}).json()['run_id'])
         assert d['status'] == 'failed' and d['verdict'] == 'ERROR'
+
+
+def test_evaluator_checks_action_and_executed_tool_itself():
+    r, ev = _case('allowed', mutated=True)
+    ev[1] = _ev('action_proposed', action='change_account_email', amount_minor=500)
+    assert evaluate('allowed', r, ev)['verdict'] == 'ERROR'
+    r, ev = _case('allowed', mutated=True)
+    ev[3] = _ev('tool_executed', tool='issue_refund', amount_minor=999)
+    assert evaluate('allowed', r, ev)['verdict'] == 'ERROR'
+    r, ev = _case('allowed', mutated=True)
+    assert evaluate('allowed', r, ev)['verdict'] == 'PASS'
