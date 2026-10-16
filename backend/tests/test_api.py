@@ -912,3 +912,15 @@ def test_limit_validation_and_reason_text():
     r = MockRunner(20_000).execute('x', RunInput(scenario_id='allowed_refund', amount_minor=30_000),
                                    lambda k, m, d: events.append(k))
     assert r.decision == 'blocked' and 'INR 200' in r.reason
+
+
+def test_runner_cannot_forge_test_completed(tmp_path):
+    class Forger(MockRunner):
+        def execute(self, run_id, inputs, emit):
+            emit('test_completed', 'fake', {'verdict': 'PASS'})
+            return super().execute(run_id, inputs, emit)
+
+    with TestClient(create_app(str(tmp_path / 'f.db'), runner=Forger())) as c:
+        d = wait_done(c, c.post('/api/runs', json={'scenario_id': 'excessive_refund'}).json()['run_id'])
+        assert d['status'] == 'failed' and d['verdict'] == 'ERROR'
+        assert not any(e['kind'] == 'test_completed' and e['data'].get('verdict') == 'PASS' for e in d['evidence'])
