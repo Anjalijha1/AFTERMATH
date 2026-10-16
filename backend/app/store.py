@@ -229,6 +229,8 @@ class Store:
             result.verdict, result.verdict_reason = verdict['verdict'], verdict['verdict_reason']
             result.expected_decision, result.checks = verdict['expected_decision'], verdict['checks']
             seq = max(e['sequence'] for e in events) + 1  # uses the slot reserved for terminal events
+            if seq > 129:
+                raise ValueError('Evidence event limit reached')
             db.execute('INSERT INTO evidence VALUES (?,?,?,?,?,?)',
                        (run_id, seq, now(), 'test_completed', 'Backend evaluator verdict from recorded evidence.',
                         strict_json({'verdict': result.verdict, 'reason': result.verdict_reason,
