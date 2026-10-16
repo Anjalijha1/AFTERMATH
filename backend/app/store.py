@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
+from .evaluator import evaluate
 from .models import RunInput, RunResult
 
 
@@ -187,6 +188,7 @@ class Store:
         # alone owns regression metadata; adapters cannot assert a passing replay.
         result = RunResult.model_validate(result.model_dump(), strict=True)
         result.regression_id = result.replay_of = result.regression_passed = None
+        result.verdict = result.verdict_reason = result.expected_decision = result.checks = None
         # Validate security invariant independently of runner claims.
         before, after = strict_json(result.state_before), strict_json(result.state_after)
         if len((before + after).encode('utf-8')) > 65_536:
@@ -221,6 +223,16 @@ class Store:
                            (result.regression_id, run_id, run['input_json'], now(), 'blocked'))
             events = db.execute('SELECT * FROM evidence WHERE run_id=? ORDER BY sequence', (run_id,)).fetchall()
             self.validate_evidence(events, result)
+            sc = db.execute('SELECT expected_decision FROM scenarios WHERE id=?',
+                            (json.loads(run['input_json'])['scenario_id'],)).fetchone()
+            verdict = evaluate(sc['expected_decision'] if sc else None, result, events)
+            result.verdict, result.verdict_reason = verdict['verdict'], verdict['verdict_reason']
+            result.expected_decision, result.checks = verdict['expected_decision'], verdict['checks']
+            seq = max(e['sequence'] for e in events) + 1  # uses the slot reserved for terminal events
+            db.execute('INSERT INTO evidence VALUES (?,?,?,?,?,?)',
+                       (run_id, seq, now(), 'test_completed', 'Backend evaluator verdict from recorded evidence.',
+                        strict_json({'verdict': result.verdict, 'reason': result.verdict_reason,
+                                     'expected_decision': result.expected_decision})))
             db.execute("UPDATE runs SET status='completed',finished_at=?,result_json=? WHERE id=? AND status='running'",
                        (now(), result.model_dump_json(), run_id))
 
@@ -236,16 +248,18 @@ class Store:
             if not row:
                 return None
             events = db.execute('SELECT * FROM evidence WHERE run_id=? ORDER BY sequence', (run_id,)).fetchall()
-            return {'run_id': row['id'], 'status': row['status'], 'execution_mode': 'mock',
+            result = json.loads(row['result_json']) if row['result_json'] else None
+            verdict = (result or {}).get('verdict') or ('ERROR' if row['status'] == 'failed' else None)
+            return {'run_id': row['id'], 'status': row['status'], 'execution_mode': 'mock', 'verdict': verdict,
                     'input': json.loads(row['input_json']), 'created_at': row['created_at'],
                     'started_at': row['started_at'], 'finished_at': row['finished_at'],
-                    'result': json.loads(row['result_json']) if row['result_json'] else None,
+                    'result': result,
                     'error': json.loads(row['error_json']) if row['error_json'] else None,
                     'evidence': [self.event_view(e) for e in events]}
 
     # Old event kind -> design-doc event name. Old `kind` stays unchanged for compatibility.
     DOC_EVENTS = {'action_proposed': 'agent_action_proposed', 'tool_executed': 'tool_executed',
-                  'state_verified': 'state_verified'}
+                  'state_verified': 'state_verified', 'test_completed': 'test_completed'}
 
     @classmethod
     def event_view(cls, e):
