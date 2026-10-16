@@ -596,3 +596,50 @@ def test_exact_body_byte_limit(client):
     body = payload + b' ' * (65536 - len(payload))
     assert client.post('/runs',content=body,headers={'Content-Type':'application/json'}).status_code == 202
     assert client.post('/runs',content=body+b' ',headers={'Content-Type':'application/json'}).status_code == 413
+
+
+# ---- Round 1: design-doc API contract (/api prefix, /events, doc event names) ----
+def test_api_prefix_matches_legacy_paths(tmp_path):
+    with TestClient(create_app(str(tmp_path / 'a.db'))) as c:
+        assert c.get('/api/health').json() == c.get('/health').json()
+        assert c.get('/api/scenarios').json() == c.get('/scenarios').json()
+        r = c.post('/api/runs', json={'scenario_id': 'allowed_refund'})
+        assert r.status_code == 202
+        rid = r.json()['run_id']
+        for _ in range(100):
+            data = c.get(f'/api/runs/{rid}').json()
+            if data['status'] in ('completed', 'failed'):
+                break
+            time.sleep(0.05)
+        assert data['status'] == 'completed'
+        assert c.get(f'/runs/{rid}').json()['result'] == data['result']
+        assert c.get('/api/runs').json()['total'] == c.get('/runs').json()['total']
+
+
+def test_events_endpoint_and_doc_event_names(tmp_path):
+    with TestClient(create_app(str(tmp_path / 'b.db'))) as c:
+        ids = {}
+        for sid in ('allowed_refund', 'excessive_refund'):
+            ids[sid] = c.post('/api/runs', json={'scenario_id': sid}).json()['run_id']
+        for sid, rid in ids.items():
+            for _ in range(100):
+                if c.get(f'/api/runs/{rid}').json()['status'] in ('completed', 'failed'):
+                    break
+                time.sleep(0.05)
+            ev = c.get(f'/api/runs/{rid}/events').json()
+            assert ev == c.get(f'/runs/{rid}/evidence').json()
+            kinds = {e['kind']: e['event_type'] for e in ev['items']}
+            assert kinds['action_proposed'] == 'agent_action_proposed'
+            assert kinds['state_verified'] == 'state_verified'
+            want = 'authorization_allowed' if sid == 'allowed_refund' else 'authorization_denied'
+            assert kinds['policy_decision'] == want
+            # Old `kind` values are unchanged (compat).
+            assert all('kind' in e for e in ev['items'])
+        assert c.get('/api/runs/nope/events').status_code == 404
+
+
+def test_api_key_guard_covers_api_prefix(tmp_path):
+    with TestClient(create_app(str(tmp_path / 'c.db'), api_key='k')) as c:
+        assert c.get('/api/health').status_code == 200
+        assert c.get('/api/runs').status_code == 401
+        assert c.get('/api/runs', headers={'X-API-Key': 'k'}).status_code == 200
