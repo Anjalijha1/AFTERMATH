@@ -652,3 +652,84 @@ def test_status_url_keeps_client_prefix(tmp_path):
         assert new['status_url'] == '/api/runs/' + new['run_id']
         assert old['status_url'] == '/runs/' + old['run_id']
         assert c.get(new['status_url']).status_code == 200
+
+
+# ---- Round 2: saved scenarios (POST/GET /api/scenarios) ----
+def new_scenario(**over):
+    base = {'scenario_id': 'big_refund_blocked', 'name': 'Big refund', 'action': 'issue_refund',
+            'amount_minor': 300_000, 'ticket': 'Customer asks INR 3000.', 'expected_decision': 'blocked'}
+    base.update(over)
+    return base
+
+
+def wait_done(c, rid):
+    for _ in range(100):
+        d = c.get(f'/api/runs/{rid}').json()
+        if d['status'] in ('completed', 'failed'):
+            return d
+        time.sleep(0.05)
+    raise AssertionError('run did not finish')
+
+
+def test_builtin_scenarios_seeded_with_expected_decision(tmp_path):
+    with TestClient(create_app(str(tmp_path / 's1.db'))) as c:
+        items = {i['scenario_id']: i for i in c.get('/api/scenarios').json()['items']}
+        assert set(items) == {'allowed_refund', 'excessive_refund', 'injection_refund', 'account_email_change'}
+        assert items['allowed_refund']['expected_decision'] == 'allowed'
+        assert all(items[k]['expected_decision'] == 'blocked' for k in items if k != 'allowed_refund')
+        assert all(i['builtin'] for i in items.values())
+        assert c.get('/api/scenarios/allowed_refund').json()['name'] == 'Small refund'
+
+
+def test_saved_scenario_persists_and_runs(tmp_path):
+    db = str(tmp_path / 's2.db')
+    with TestClient(create_app(db)) as c:
+        r = c.post('/api/scenarios', json=new_scenario())
+        assert r.status_code == 201 and r.json()['builtin'] is False
+        rid = c.post('/api/runs', json={'scenario_id': 'big_refund_blocked'}).json()['run_id']
+        d = wait_done(c, rid)
+        assert d['status'] == 'completed'
+        assert d['result']['decision'] == 'blocked' and d['result']['amount_minor'] == 300_000
+        assert d['result']['state_mutated'] is False
+        assert c.get('/scenarios').json() == c.get('/api/scenarios').json()
+    with TestClient(create_app(db)) as c2:  # survives restart
+        assert c2.get('/api/scenarios/big_refund_blocked').status_code == 200
+
+
+@pytest.mark.parametrize('over', [
+    {'scenario_id': 'AB'}, {'scenario_id': 'Has Space'}, {'scenario_id': 'x' * 41}, {'name': ''}, {'name': '  '},
+    {'ticket': ''}, {'action': 'drop_table'}, {'amount_minor': -1}, {'amount_minor': 10_000_001},
+    {'amount_minor': 1.5}, {'amount_minor': True}, {'expected_decision': 'maybe'}, {'admin': True},
+    {'action': 'change_account_email', 'amount_minor': 5}, {'amount_minor': 0}])
+def test_scenario_validation(tmp_path, over):
+    with TestClient(create_app(str(tmp_path / 's3.db'))) as c:
+        r = c.post('/api/scenarios', json=new_scenario(**over))
+        assert r.status_code == 422 and r.json()['error']['code'] == 'VALIDATION_ERROR'
+        assert len(c.get('/api/scenarios').json()['items']) == 4
+
+
+def test_scenario_duplicate_builtin_overwrite_and_unknown(tmp_path):
+    with TestClient(create_app(str(tmp_path / 's4.db'))) as c:
+        assert c.post('/api/scenarios', json=new_scenario()).status_code == 201
+        assert c.post('/api/scenarios', json=new_scenario(name='Other')).status_code == 409
+        r = c.post('/api/scenarios', json=new_scenario(scenario_id='allowed_refund'))
+        assert r.status_code == 409 and r.json()['error']['code'] == 'SCENARIO_EXISTS'
+        assert c.get('/api/scenarios/allowed_refund').json()['amount_minor'] == 50_000
+        assert c.get('/api/scenarios/nope_nope').status_code == 404
+        assert c.post('/api/runs', json={'scenario_id': 'nope_nope'}).status_code == 422
+
+
+def test_scenario_limit(tmp_path):
+    with TestClient(create_app(str(tmp_path / 's5.db'))) as c:
+        for i in range(196):
+            assert c.post('/api/scenarios', json=new_scenario(scenario_id=f'sc_{i:04d}')).status_code == 201
+        r = c.post('/api/scenarios', json=new_scenario(scenario_id='one_more'))
+        assert r.status_code == 429 and r.json()['error']['code'] == 'SCENARIO_LIMIT'
+
+
+def test_saved_scenario_replay_after_blocked_run(tmp_path):
+    with TestClient(create_app(str(tmp_path / 's6.db'))) as c:
+        c.post('/api/scenarios', json=new_scenario())
+        d = wait_done(c, c.post('/api/runs', json={'scenario_id': 'big_refund_blocked'}).json()['run_id'])
+        rid = c.post(f"/api/regressions/{d['result']['regression_id']}/replay").json()['run_id']
+        assert wait_done(c, rid)['result']['regression_passed'] is True
