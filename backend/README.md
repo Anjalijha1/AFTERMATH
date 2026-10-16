@@ -101,6 +101,16 @@ amount); at most 200 scenarios; a saved scenario cannot be edited or overwritten
 mock runner never reads it, so it cannot influence the policy decision. Running an
 unknown `scenario_id` returns 422. These run on the same MOCK runner and policy.
 
+### Sandbox tables (Round 3)
+
+Each run gets its own private in-memory SQLite sandbox (`app/sandbox.py`) with a
+`customers` table (seeded `CUST-001`, INR 1000 refund limit) and a `refunds` table.
+The mock `issue_refund` tool inserts a real row only after an allowed policy decision;
+`state_before` and `state_after` are read back from the tables (new field
+`refund_count`; `tool_executed` evidence now has `refund_row_id`). A blocked action
+leaves the tables unchanged. The sandbox is not saved after the run; the before/after
+snapshots stay in the run's evidence. It is still the MOCK runner and mock policy.
+
 ### Start a run
 
 ```sh
