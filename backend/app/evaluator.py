@@ -31,7 +31,12 @@ def evaluate(expected_decision, result, events):
     event_decision = data['policy_decision'].get('decision')
     executed = 'tool_executed' in kinds
     snap = data['state_verified']
+    ex = data.get('tool_executed') or {}
     consistent = all([
+        check('proposed action matches result action', data['action_proposed'].get('action') == result.action),
+        check('executed tool and amount match result',
+              not executed or (ex.get('tool') == result.action and
+                               (result.action != 'issue_refund' or ex.get('amount_minor') == result.amount_minor))),
         check('policy event matches result decision', event_decision == result.decision),
         check('tool outcome matches decision', executed == (result.decision == 'allowed')),
         check('evidence snapshots match result snapshots',
