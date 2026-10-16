@@ -83,6 +83,24 @@ also has `event_type` with the design-doc name (`agent_action_proposed`,
 `authorization_allowed`, `authorization_denied`, `tool_executed`, `state_verified`);
 the old `kind` is unchanged. `event_type` is `null` where the doc has no name.
 
+### Saved scenarios (Round 2)
+
+Scenarios now live in SQLite (the 4 built-in demos are seeded once, marked
+`builtin: true`). `GET /api/scenarios`, `GET /api/scenarios/{id}`, and
+`POST /api/scenarios` (201) to save a new one:
+
+```json
+{"scenario_id": "big_refund_blocked", "name": "Big refund", "action": "issue_refund",
+ "amount_minor": 300000, "ticket": "Customer asks INR 3000.", "expected_decision": "blocked"}
+```
+
+Rules: `scenario_id` is 3-40 chars of `a-z 0-9 _`; action is `issue_refund` or
+`change_account_email` (email change needs `amount_minor` 0, refund needs a positive
+amount); at most 200 scenarios; a saved scenario cannot be edited or overwritten
+(409 `SCENARIO_EXISTS`). `expected_decision` is only the developer's expectation; the
+mock runner never reads it, so it cannot influence the policy decision. Running an
+unknown `scenario_id` returns 422. These run on the same MOCK runner and policy.
+
 ### Start a run
 
 ```sh
