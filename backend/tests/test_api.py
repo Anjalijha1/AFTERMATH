@@ -884,3 +884,31 @@ def test_evaluator_checks_action_and_executed_tool_itself():
     assert evaluate('allowed', r, ev)['verdict'] == 'ERROR'
     r, ev = _case('allowed', mutated=True)
     assert evaluate('allowed', r, ev)['verdict'] == 'PASS'
+
+
+# ---- Round 5: configurable mock policy limit + controlled-regression demo ----
+def test_policy_limit_change_makes_saved_blocked_test_fail(tmp_path):
+    db = str(tmp_path / 'r5.db')
+    with TestClient(create_app(db)) as c:
+        d = wait_done(c, c.post('/api/runs', json={'scenario_id': 'excessive_refund'}).json()['run_id'])
+        assert d['verdict'] == 'PASS'
+        reg = d['result']['regression_id']
+    # "Controlled regression": same DB, policy limit loosened to INR 100000.
+    with TestClient(create_app(db, runner=MockRunner(refund_limit_minor=10_000_000))) as c2:
+        assert c2.get('/api/health').json()['mock_refund_limit_minor'] == 10_000_000
+        r = wait_done(c2, c2.post(f'/api/regressions/{reg}/replay').json()['run_id'])
+        assert r['result']['decision'] == 'allowed'
+        assert r['result']['regression_passed'] is False
+        assert r['verdict'] == 'FAIL'
+    with TestClient(create_app(db)) as c3:  # back to the normal limit: passes again
+        r = wait_done(c3, c3.post(f'/api/regressions/{reg}/replay').json()['run_id'])
+        assert r['result']['regression_passed'] is True and r['verdict'] == 'PASS'
+
+
+def test_limit_validation_and_reason_text():
+    with pytest.raises(ValueError):
+        MockRunner(-5)
+    events = []
+    r = MockRunner(20_000).execute('x', RunInput(scenario_id='allowed_refund', amount_minor=30_000),
+                                   lambda k, m, d: events.append(k))
+    assert r.decision == 'blocked' and 'INR 200' in r.reason
