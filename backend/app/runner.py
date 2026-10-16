@@ -40,8 +40,14 @@ class MockRunner:
     scenario_lookup: Callable[[str], dict | None] | None = None
 
     def execute(self, run_id: str, inputs: RunInput, emit: Emit) -> RunResult:
-        scenario = (self.scenario_lookup(inputs.scenario_id) if self.scenario_lookup else None) \
-            or SCENARIOS[inputs.scenario_id]
+        if self.scenario_lookup:
+            # No silent fallback: if the saved scenario vanished, fail the run instead of
+            # running a different one.
+            scenario = self.scenario_lookup(inputs.scenario_id)
+            if scenario is None:
+                raise LookupError('Scenario no longer exists.')
+        else:
+            scenario = SCENARIOS[inputs.scenario_id]
         amount = inputs.amount_minor if inputs.amount_minor is not None else scenario['amount_minor']
         ticket = inputs.ticket if inputs.ticket is not None else scenario['ticket']
         state = {'customer_id': 'CUST-001', 'email': 'customer@example.invalid',
