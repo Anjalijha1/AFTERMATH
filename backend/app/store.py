@@ -228,8 +228,23 @@ class Store:
                     'started_at': row['started_at'], 'finished_at': row['finished_at'],
                     'result': json.loads(row['result_json']) if row['result_json'] else None,
                     'error': json.loads(row['error_json']) if row['error_json'] else None,
-                    'evidence': [{'sequence': e['sequence'], 'timestamp': e['timestamp'], 'kind': e['kind'],
-                                  'message': e['message'], 'data': json.loads(e['data_json'])} for e in events]}
+                    'evidence': [self.event_view(e) for e in events]}
+
+    # Old event kind -> design-doc event name. Old `kind` stays unchanged for compatibility.
+    DOC_EVENTS = {'action_proposed': 'agent_action_proposed', 'tool_executed': 'tool_executed',
+                  'state_verified': 'state_verified'}
+
+    @classmethod
+    def event_view(cls, e):
+        data = json.loads(e['data_json'])
+        kind = e['kind']
+        if kind == 'policy_decision':
+            decision = data.get('decision')
+            doc = {'allowed': 'authorization_allowed', 'blocked': 'authorization_denied'}.get(decision)
+        else:
+            doc = cls.DOC_EVENTS.get(kind)
+        return {'sequence': e['sequence'], 'timestamp': e['timestamp'], 'kind': kind, 'event_type': doc,
+                'message': e['message'], 'data': data}
 
     def list_runs(self, limit, offset):
         with self.connection() as db:
