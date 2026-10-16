@@ -1,0 +1,93 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-ink text-[15px] leading-relaxed text-slate-800 antialiased;
+    font-family: 'Plus Jakarta Sans', Inter, system-ui, sans-serif;
+    background-image: 
+      radial-gradient(900px 500px at 100% 0%, rgba(167, 243, 208, 0.4), rgba(186, 230, 253, 0.25) 45%, transparent 75%),
+      radial-gradient(600px 400px at 0% 100%, rgba(209, 250, 229, 0.25), transparent 70%);
+    background-attachment: fixed;
+    min-height: 100vh;
+  }
+  
+  td {
+    @apply px-5 py-4 align-middle text-sm;
+  }
+  
+  th {
+    @apply font-semibold tracking-wider text-xs uppercase;
+  }
+}
+
+@layer components {
+  /* Clean, spacious card styled according to reference */
+  .card {
+    @apply rounded-3xl border border-slate-200/90 bg-white p-6 md:p-8 transition-all duration-200;
+    box-shadow: 0 10px 30px -4px rgba(15, 23, 42, 0.04), 0 4px 6px -2px rgba(15, 23, 42, 0.02);
+  }
+  
+  .card-dark {
+    @apply rounded-3xl border border-slate-800/80 bg-[#0B0F17] p-6 md:p-8 text-white shadow-xl;
+  }
+  
+  .card-gradient {
+    @apply rounded-3xl border border-emerald-200/70 bg-gradient-to-br from-[#BFF7E2] via-[#D1FAE5] to-[#BAE6FD] p-6 md:p-8 text-slate-900;
+    box-shadow: 0 10px 30px -4px rgba(15, 23, 42, 0.04), 0 4px 6px -2px rgba(15, 23, 42, 0.02);
+  }
+
+  /* Pill badges matching reference */
+  .pill-black {
+    @apply inline-flex items-center gap-1.5 rounded-full bg-black px-4 py-1.5 text-xs font-semibold tracking-wider text-white shadow-sm;
+  }
+
+  .pill-outline {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-slate-300 bg-white px-4 py-1.5 text-xs font-medium text-slate-800 shadow-sm hover:bg-slate-50 transition;
+  }
+
+  .pill-gradient {
+    @apply inline-flex items-center gap-1.5 rounded-full bg-gradient-to-r from-emerald-200 to-sky-200 px-4 py-1.5 text-xs font-bold text-slate-950 shadow-sm;
+  }
+
+  /* Sized buttons matching reference */
+  .btn {
+    @apply inline-flex min-h-[44px] items-center justify-center gap-2 rounded-full px-6 py-2.5 text-sm font-semibold transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 active:scale-[0.98];
+  }
+  
+  .btn-p {
+    @apply btn bg-black text-white hover:bg-slate-800 shadow-sm hover:shadow;
+  }
+  
+  .btn-g {
+    @apply btn border border-slate-200 bg-white text-slate-800 hover:bg-slate-50 hover:border-slate-300 shadow-sm;
+  }
+
+  .btn-gradient {
+    @apply btn bg-gradient-to-r from-emerald-300 via-teal-200 to-sky-200 text-slate-950 font-bold hover:brightness-105 shadow-sm;
+  }
+
+  /* Dark card button overrides */
+  .card-dark .btn-p {
+    @apply bg-white text-slate-950 hover:bg-slate-100;
+  }
+
+  .card-dark .btn-g {
+    @apply border-slate-700 bg-white/10 text-white hover:bg-white/20 hover:border-slate-600;
+  }
+
+  /* Input fields with spacious sizing */
+  .inp {
+    @apply min-h-[46px] w-full rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm outline-none transition focus:border-slate-900 focus:ring-2 focus:ring-slate-900/10 placeholder:text-slate-400;
+  }
+}
+
+@layer utilities {
+  .shadow-card {
+    box-shadow: 0 10px 30px -4px rgba(15, 23, 42, 0.04), 0 4px 6px -2px rgba(15, 23, 42, 0.02);
+  }
+  .shadow-subtle {
+    box-shadow: 0 4px 20px -2px rgba(15, 23, 42, 0.05);
+  }
+}
