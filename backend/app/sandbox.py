@@ -11,6 +11,8 @@ SEED_REFUND_LIMIT_MINOR = 100_000  # INR 1000, in paise
 
 class Sandbox:
     def __init__(self, refund_limit_minor: int = SEED_REFUND_LIMIT_MINOR):
+        if type(refund_limit_minor) is not int or refund_limit_minor < 0:
+            raise ValueError('refund_limit_minor must be a non-negative integer (paise).')
         self.db = sqlite3.connect(':memory:')
         self.db.row_factory = sqlite3.Row
         self.db.executescript('''
