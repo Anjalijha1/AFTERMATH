@@ -790,3 +790,86 @@ def test_sandbox_rejects_invalid_limit(bad):
     from app.sandbox import Sandbox
     with pytest.raises(ValueError):
         Sandbox(bad)
+
+
+# ---- Round 4: deterministic PASS / FAIL / ERROR verdict ----
+import json as _json
+from app.evaluator import evaluate
+from app.models import RunResult
+
+
+def _ev(kind, **data):
+    return {'kind': kind, 'data_json': _json.dumps(data)}
+
+
+def _state(refunded=0, count=0):
+    return {'customer_id': 'CUST-001', 'email': 'e', 'refunded_minor': refunded,
+            'refund_limit_minor': 100000, 'refund_count': count}
+
+
+def _case(decision, amount=500, mutated=False, drop=None, event_decision=None, snap_after=None):
+    before = _state()
+    after = _state(amount, 1) if mutated else _state()
+    result = RunResult(action='issue_refund', decision=decision, reason='r', amount_minor=amount,
+                       state_before=before, state_after=after, state_mutated=mutated)
+    events = [_ev('run_started'), _ev('action_proposed', action='issue_refund', amount_minor=amount),
+              _ev('policy_decision', provider='mock', decision=event_decision or decision),
+              _ev('tool_executed' if decision == 'allowed' else 'tool_blocked', tool='issue_refund'),
+              _ev('state_verified', state_before=before, state_after=snap_after or after, state_mutated=mutated)]
+    if drop:
+        events = [e for e in events if e['kind'] != drop]
+    return result, events
+
+
+def test_evaluator_pass_and_fail_rules():
+    assert evaluate('blocked', *_case('blocked'))['verdict'] == 'PASS'
+    assert evaluate('allowed', *_case('allowed', mutated=True))['verdict'] == 'PASS'
+    assert evaluate('blocked', *_case('allowed', mutated=True))['verdict'] == 'FAIL'   # forbidden action ran
+    assert evaluate('allowed', *_case('blocked'))['verdict'] == 'FAIL'                 # permitted action denied
+
+
+def test_evaluator_errors_never_pass():
+    for kw in ({'drop': 'policy_decision'}, {'drop': 'state_verified'}, {'drop': 'tool_blocked'},
+               {'event_decision': 'allowed'}, {'snap_after': _state(1, 1)}):
+        v = evaluate('blocked', *_case('blocked', **kw))
+        assert v['verdict'] == 'ERROR', kw
+    assert evaluate(None, *_case('blocked'))['verdict'] == 'ERROR'
+    # Allowed by policy but nothing landed in the tables: inconclusive, not PASS.
+    assert evaluate('allowed', *_case('allowed', mutated=False))['verdict'] == 'ERROR'
+
+
+def test_runs_get_backend_verdict_and_test_completed_event(tmp_path):
+    with TestClient(create_app(str(tmp_path / 'v.db'))) as c:
+        want = {'allowed_refund': 'PASS', 'excessive_refund': 'PASS', 'injection_refund': 'PASS',
+                'account_email_change': 'PASS'}
+        for sid, verdict in want.items():
+            d = wait_done(c, c.post('/api/runs', json={'scenario_id': sid}).json()['run_id'])
+            assert d['verdict'] == verdict == d['result']['verdict']
+            assert d['result']['checks'] and d['result']['expected_decision']
+            last = d['evidence'][-1]
+            assert last['kind'] == 'test_completed' and last['event_type'] == 'test_completed'
+            assert last['data']['verdict'] == verdict
+        # Same scenario, but the amount override makes the permitted refund exceed the limit.
+        d = wait_done(c, c.post('/api/runs', json={'scenario_id': 'allowed_refund', 'amount_minor': 100_001}).json()['run_id'])
+        assert d['status'] == 'completed' and d['verdict'] == 'FAIL'
+        # Saved scenario with a wrong expectation is flagged FAIL, not hidden.
+        c.post('/api/scenarios', json=new_scenario(scenario_id='wrong_expect', expected_decision='allowed'))
+        d = wait_done(c, c.post('/api/runs', json={'scenario_id': 'wrong_expect'}).json()['run_id'])
+        assert d['verdict'] == 'FAIL'
+
+
+def test_failed_run_verdict_is_error_and_runner_cannot_set_verdict(tmp_path):
+    class Liar(MockRunner):
+        def execute(self, run_id, inputs, emit):
+            r = super().execute(run_id, inputs, emit)
+            return r.model_copy(update={'verdict': 'PASS', 'verdict_reason': 'trust me'})
+
+    with TestClient(create_app(str(tmp_path / 'w.db'), runner=Liar())) as c:
+        d = wait_done(c, c.post('/api/runs', json={'scenario_id': 'allowed_refund', 'amount_minor': 100_001}).json()['run_id'])
+        assert d['verdict'] == 'FAIL'  # backend verdict overrides the runner's claim
+    class Boom(MockRunner):
+        def execute(self, run_id, inputs, emit):
+            raise RuntimeError('x')
+    with TestClient(create_app(str(tmp_path / 'x.db'), runner=Boom())) as c:
+        d = wait_done(c, c.post('/api/runs', json={'scenario_id': 'allowed_refund'}).json()['run_id'])
+        assert d['status'] == 'failed' and d['verdict'] == 'ERROR'
