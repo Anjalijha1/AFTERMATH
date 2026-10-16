@@ -36,7 +36,7 @@ def create_app(db_path=None, runner: Runner | None = None, api_key=None):
     app.state.store = store
     @app.middleware('http')
     async def guard(request: Request, call_next):
-        if key and request.url.path != '/health' and request.method != 'OPTIONS':
+        if key and request.url.path not in ('/health', '/api/health') and request.method != 'OPTIONS':
             supplied_keys = request.headers.getlist('x-api-key')
             supplied = supplied_keys[0] if len(supplied_keys) == 1 else ''
             if not secrets.compare_digest(supplied.encode(), key.encode()):
@@ -64,6 +64,14 @@ def create_app(db_path=None, runner: Runner | None = None, api_key=None):
         # Do not echo raw user input in validation errors.
         details = [{'field': '.'.join(map(str, e['loc'])), 'message': e['msg'], 'type': e['type']} for e in exc.errors()]
         return JSONResponse(status_code=422, content={'error': {'code': 'VALIDATION_ERROR', 'message': 'Invalid request.', 'details': details}})
+
+    def route(method, path, **kw):
+        """Register /path (legacy, hidden from docs) and /api/path (documented)."""
+        def deco(fn):
+            app.add_api_route('/api' + path, fn, methods=[method], **kw)
+            app.add_api_route(path, fn, methods=[method], include_in_schema=False, **kw)
+            return fn
+        return deco
 
     def missing(code, message):
         raise HTTPException(404, detail={'code': code, 'message': message})
@@ -95,50 +103,55 @@ def create_app(db_path=None, runner: Runner | None = None, api_key=None):
                 raise HTTPException(503, detail={'code': 'WORKER_UNAVAILABLE', 'message': 'Run worker unavailable.'})
         return RunAccepted(run_id=run_id, status=store.get(run_id)['status'], status_url=f'/runs/{run_id}')
 
-    @app.get('/health')
+    @route('GET', '/health')
     def health():
         with store.connection() as db:
             db.execute('SELECT 1')
         return {'status': 'ok', 'execution_mode': 'mock', 'real_armoriq': False}
 
-    @app.get('/scenarios')
+    @route('GET', '/scenarios')
     def scenarios():
         return {'execution_mode': 'mock', 'items': [{'scenario_id': k, **v} for k, v in SCENARIOS.items()]}
 
-    @app.post('/runs', response_model=RunAccepted, status_code=202)
+    @route('POST', '/runs', response_model=RunAccepted, status_code=202)
     def start_run(inputs: RunInput, idempotency_key: str | None = Header(default=None)):
         return submit(inputs, idempotency_key)
 
-    @app.get('/runs')
+    @route('GET', '/runs')
     def list_runs(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0, le=100_000)):
         return store.list_runs(limit, offset)
 
-    @app.get('/runs/{run_id}', response_model=RunView)
+    @route('GET', '/runs/{run_id}', response_model=RunView)
     def get_run(run_id: str):
         result = store.get(run_id)
         if result is None:
             missing('RUN_NOT_FOUND', 'No run exists with this ID.')
         return result
 
-    @app.get('/runs/{run_id}/evidence')
+    @route('GET', '/runs/{run_id}/evidence')
     def evidence(run_id: str):
         result = store.get(run_id)
         if result is None:
             missing('RUN_NOT_FOUND', 'No run exists with this ID.')
         return {'run_id': run_id, 'status': result['status'], 'items': result['evidence']}
 
-    @app.get('/regressions')
+    @route('GET', '/runs/{run_id}/events')
+    def events(run_id: str):
+        # Same data as /evidence. Doc contract name for the ordered timeline.
+        return evidence(run_id)
+
+    @route('GET', '/regressions')
     def regressions(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0, le=100_000)):
         return store.regressions(limit, offset)
 
-    @app.get('/regressions/{regression_id}')
+    @route('GET', '/regressions/{regression_id}')
     def regression(regression_id: str):
         fixture = store.regression(regression_id)
         if fixture is None:
             missing('REGRESSION_NOT_FOUND', 'No regression exists with this ID.')
         return fixture
 
-    @app.post('/regressions/{regression_id}/replay', response_model=RunAccepted, status_code=202)
+    @route('POST', '/regressions/{regression_id}/replay', response_model=RunAccepted, status_code=202)
     def replay(regression_id: str, idempotency_key: str | None = Header(default=None)):
         fixture = store.regression(regression_id)
         if fixture is None:
