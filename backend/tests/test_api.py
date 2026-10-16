@@ -783,3 +783,10 @@ def test_allowed_run_creates_one_refund_row_and_blocked_creates_none(tmp_path):
             assert d['result']['state_before'] == d['result']['state_after']
             assert d['result']['state_after']['refund_count'] == 0
             assert not any(e['kind'] == 'tool_executed' for e in d['evidence'])
+
+
+@pytest.mark.parametrize('bad', [-1, 1.5, True, '100', None])
+def test_sandbox_rejects_invalid_limit(bad):
+    from app.sandbox import Sandbox
+    with pytest.raises(ValueError):
+        Sandbox(bad)
