@@ -814,7 +814,7 @@ def _case(decision, amount=500, mutated=False, drop=None, event_decision=None, s
                        state_before=before, state_after=after, state_mutated=mutated)
     events = [_ev('run_started'), _ev('action_proposed', action='issue_refund', amount_minor=amount),
               _ev('policy_decision', provider='mock', decision=event_decision or decision),
-              _ev('tool_executed' if decision == 'allowed' else 'tool_blocked', tool='issue_refund'),
+              _ev('tool_executed' if decision == 'allowed' else 'tool_blocked', tool='issue_refund', amount_minor=amount),
               _ev('state_verified', state_before=before, state_after=snap_after or after, state_mutated=mutated)]
     if drop:
         events = [e for e in events if e['kind'] != drop]
