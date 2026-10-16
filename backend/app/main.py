@@ -9,9 +9,9 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from .models import RunAccepted, RunInput, RunView
-from .runner import MockRunner, Runner, SCENARIOS
-from .store import CapacityExceeded, IdempotencyConflict, Store
+from .models import RunAccepted, RunInput, RunView, ScenarioIn
+from .runner import MockRunner, Runner
+from .store import CapacityExceeded, IdempotencyConflict, ScenarioExists, Store
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 def create_app(db_path=None, runner: Runner | None = None, api_key=None):
     store = Store(db_path or os.getenv('AFTERMATH_DB_PATH', './data/aftermath.db'))
     adapter = runner or MockRunner()
+    if isinstance(adapter, MockRunner):
+        adapter.scenario_lookup = store.get_scenario
     key = api_key if api_key is not None else os.getenv('AFTERMATH_API_KEY', '')
 
     @asynccontextmanager
@@ -91,6 +93,8 @@ def create_app(db_path=None, runner: Runner | None = None, api_key=None):
             store.fail(run_id)
 
     def submit(inputs, idempotency_key, replay_of=None, prefix=''):
+        if store.get_scenario(inputs.scenario_id) is None:
+            raise HTTPException(422, detail={'code': 'VALIDATION_ERROR', 'message': 'Invalid request.', 'details': [{'field': 'body.scenario_id', 'message': 'Unknown scenario_id. List scenarios with GET /api/scenarios.', 'type': 'scenario_not_found'}]})
         if idempotency_key is not None and not re.fullmatch(r'[A-Za-z0-9._:-]{1,128}', idempotency_key):
             raise HTTPException(422, detail={'code': 'INVALID_IDEMPOTENCY_KEY', 'message': 'Key must be 1-128 ASCII letters, digits, dot, underscore, colon or dash.'})
         try:
@@ -115,7 +119,23 @@ def create_app(db_path=None, runner: Runner | None = None, api_key=None):
 
     @route('GET', '/scenarios')
     def scenarios():
-        return {'execution_mode': 'mock', 'items': [{'scenario_id': k, **v} for k, v in SCENARIOS.items()]}
+        return {'execution_mode': 'mock', 'items': store.list_scenarios()}
+
+    @route('POST', '/scenarios', status_code=201)
+    def create_scenario(scenario: ScenarioIn):
+        try:
+            return store.create_scenario(scenario)
+        except ScenarioExists:
+            raise HTTPException(409, detail={'code': 'SCENARIO_EXISTS', 'message': 'A scenario with this ID already exists. Scenarios are not edited; pick a new ID.'})
+        except CapacityExceeded:
+            raise HTTPException(429, detail={'code': 'SCENARIO_LIMIT', 'message': 'At most 200 scenarios can be saved.'})
+
+    @route('GET', '/scenarios/{scenario_id}')
+    def get_scenario(scenario_id: str):
+        found = store.get_scenario(scenario_id)
+        if found is None:
+            missing('SCENARIO_NOT_FOUND', 'No scenario exists with this ID.')
+        return found
 
     @route('POST', '/runs', response_model=RunAccepted, status_code=202)
     def start_run(request: Request, inputs: RunInput, idempotency_key: str | None = Header(default=None)):
