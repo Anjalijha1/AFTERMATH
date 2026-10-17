@@ -383,3 +383,22 @@ changed behavior, blocked-state invariants, API-key/CORS and capacity limits.
 - No user auth/roles/tenant model; API-key option is for controlled demos.
 - Mock regression fixtures are useful backend plumbing, not hackathon proof.
 - Python dependencies are pinned for this prototype; review/update before production.
+
+## Live mode (agent + real ArmorIQ)
+
+Default stays the deterministic mock runner. Set `AFTERMATH_RUNNER=live` to run the
+real integration path per run: agent proposal (Gemini when `GEMINI_API_KEY` is set,
+otherwise a deterministic fallback that is labeled in the evidence) -> ArmorIQ
+authorization (`armoriq-sdk` + `ARMORIQ_API_KEY`; a `PolicyBlockedException` is a
+genuine verified denial) -> gated sandbox mutation -> backend-owned verdict.
+
+```sh
+pip install armoriq-sdk google-genai
+export AFTERMATH_RUNNER=live ARMORIQ_API_KEY=... # GEMINI_API_KEY=...
+python -m uvicorn app.main:app --port 8000
+```
+
+`GET /health` reports `execution_mode: "live"` and `real_armoriq: true|false`.
+If ArmorIQ is unreachable the run fails honestly; evidence never claims a
+provider other than the one that decided ('mock', 'armoriq' or 'agent').
+ArmorIQ evidence must be verified and carry an evidence id or the run is rejected.

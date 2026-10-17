@@ -164,9 +164,13 @@ class Store:
         proposal, policy, state = (json.loads(grouped[k][0]['data_json']) for k in core)
         outcome = outcomes[0]
         tool = json.loads(outcome['data_json'])
+        provider = policy.get('provider')
         if (proposal.get('action') != result.action or policy.get('decision') != result.decision
-                or policy.get('provider') != 'mock' or tool.get('tool') != result.action):
+                or provider not in ('mock', 'armoriq', 'agent') or tool.get('tool') != result.action):
             raise ValueError('Evidence disagrees with result')
+        if provider == 'armoriq' and (policy.get('evidence_verified') is not True
+                                      or not str(policy.get('evidence_id') or '').strip()):
+            raise ValueError('ArmorIQ evidence must be verified and carry an evidence_id')
         wanted = 'tool_executed' if result.decision == 'allowed' else 'tool_blocked'
         if outcome['kind'] != wanted:
             raise ValueError('Tool outcome contradicts decision')
@@ -252,7 +256,7 @@ class Store:
             events = db.execute('SELECT * FROM evidence WHERE run_id=? ORDER BY sequence', (run_id,)).fetchall()
             result = json.loads(row['result_json']) if row['result_json'] else None
             verdict = (result or {}).get('verdict') or ('ERROR' if row['status'] == 'failed' else None)
-            return {'run_id': row['id'], 'status': row['status'], 'execution_mode': 'mock', 'verdict': verdict,
+            return {'run_id': row['id'], 'status': row['status'], 'execution_mode': (result or {}).get('execution_mode', 'mock'), 'verdict': verdict,
                     'input': json.loads(row['input_json']), 'created_at': row['created_at'],
                     'started_at': row['started_at'], 'finished_at': row['finished_at'],
                     'result': result,
@@ -307,9 +311,16 @@ class Store:
 
     def list_runs(self, limit, offset):
         with self.connection() as db:
-            rows = db.execute('SELECT id,status,created_at,finished_at FROM runs ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?', (limit, offset)).fetchall()
+            rows = db.execute('SELECT id,status,input_json,created_at,finished_at,result_json FROM runs ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?', (limit, offset)).fetchall()
             total = db.execute('SELECT count(*) FROM runs').fetchone()[0]
-            return {'items': [{'run_id': r['id'], 'status': r['status'], 'created_at': r['created_at'], 'finished_at': r['finished_at']} for r in rows], 'total': total}
+            items = []
+            for r in rows:
+                result = json.loads(r['result_json']) if r['result_json'] else None
+                items.append({'run_id': r['id'], 'status': r['status'],
+                              'scenario_id': json.loads(r['input_json']).get('scenario_id'),
+                              'verdict': (result or {}).get('verdict'),
+                              'created_at': r['created_at'], 'finished_at': r['finished_at']})
+            return {'items': items, 'total': total}
 
     def regression(self, regression_id):
         with self.connection() as db:

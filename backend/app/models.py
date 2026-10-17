@@ -55,7 +55,7 @@ class RunAccepted(BaseModel):
     run_id: str
     status: Literal['queued', 'running', 'completed', 'failed']
     status_url: str
-    execution_mode: Literal['mock'] = 'mock'
+    execution_mode: Literal['mock', 'live'] = 'mock'
 
 
 class Evidence(BaseModel):
@@ -78,7 +78,7 @@ class RunResult(BaseModel):
     state_before: dict
     state_after: dict
     state_mutated: bool
-    execution_mode: Literal['mock'] = 'mock'
+    execution_mode: Literal['mock', 'live'] = 'mock'
     regression_id: str | None = None
     replay_of: str | None = None
     regression_passed: bool | None = None
@@ -108,7 +108,7 @@ class ErrorDetail(BaseModel):
 class RunView(BaseModel):
     run_id: str
     status: Literal['queued', 'running', 'completed', 'failed']
-    execution_mode: Literal['mock'] = 'mock'
+    execution_mode: Literal['mock', 'live'] = 'mock'
     input: RunInput
     created_at: str
     started_at: str | None
