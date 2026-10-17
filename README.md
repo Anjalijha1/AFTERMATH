@@ -70,7 +70,7 @@ reachable over public HTTPS and registered in the platform (`armoriq.yaml` / Inv
 - Real ArmorIQ **allow** verified end-to-end: INR 500 refund -> `issue_refund_tool` -> ALLOWED_BY_ARMORIQ.
   Injected INR 50,000 -> `issue_large_refund_tool` -> BLOCKED_BY_ARMORIQ_POLICY; account email change ->
   `change_account_email_tool` -> blocked. Platform setup: MCP `aftermath-mcp-cosmic` registered in the
-  workspace (public Render service) and policy `aftermath-mcp-cosmic-tiered` active. Rule tool names in the
+  workspace (public Render service) and policy `aftermath-mcp-cosmic-qualified` active. Rule tool names in the
   ArmorIQ policy must be qualified (`<mcp>.<tool>`) for them to match.
 - Gemini path is implemented but untested live (no key yet); without it the
   agent's deterministic fallback is used and labeled in the evidence.
