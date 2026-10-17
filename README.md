@@ -39,6 +39,22 @@ VITE_DEMO_MODE=false npm run dev               # http://localhost:5173
 cd backend && pytest -q
 ```
 
+## ArmorIQ policy and tool tiering (honest note)
+
+ArmorIQ policies in the platform editor are tool-level (allow / hold / block); they have
+no numeric amount condition. So the refund limit is expressed by **which tool is called**:
+
+| Amount | Tool requested | ArmorIQ policy | Result |
+| --- | --- | --- | --- |
+| within the refund limit (e.g. INR 500) | `aftermath-mcp.issue_refund_tool` | allow | ALLOW |
+| above the limit (e.g. injected INR 50,000) | `aftermath-mcp.issue_large_refund_tool` | block | BLOCK |
+
+The live runner picks the tool from the amount and the limit. The MCP also caps amounts
+itself (`issue_refund_tool` rejects amounts above `MCP_REFUND_CAP`). The amount threshold is
+therefore enforced by tool tiering plus the MCP cap, not by a numeric ArmorIQ constraint.
+ArmorIQ's proxy calls the MCP itself, so the server in `mcp_public/server.py` (SSE) must be
+reachable over public HTTPS and registered in the platform (`armoriq.yaml` / Inventory).
+
 ## Status (honest)
 
 - Real ArmorIQ **deny** verified end-to-end through the live API (injection

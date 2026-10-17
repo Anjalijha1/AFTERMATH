@@ -102,7 +102,14 @@ class LiveRunner:
             emit('policy_decision', 'Agent-layer refusal. No ArmorIQ decision was requested.',
                  {'provider': provider, 'decision': decision, 'reason': reason})
         else:
-            auth = armoriq.authorize(tool_name='issue_refund_tool', customer_id=CUSTOMER_ID,
+            # Tool tiering: ArmorIQ policies here are tool-level (allow/hold/block), so the
+            # refund limit is expressed by WHICH tool is requested. Refunds within the
+            # limit use issue_refund_tool (allowed by policy); anything above uses
+            # issue_large_refund_tool (blocked by policy). The MCP also caps amounts itself.
+            tier_tool = ('issue_refund_tool' if amount_minor <= before['refund_limit_minor']
+                         else 'issue_large_refund_tool')
+            auth = armoriq.authorize(tool_name=f'{armoriq.MCP_ID}.{tier_tool}',
+                                     customer_id=CUSTOMER_ID,
                                      amount_major=amount_minor / 100, limit_major=limit_major,
                                      user_prompt=ticket)
             if auth['decision'] == 'unknown':
@@ -111,7 +118,7 @@ class LiveRunner:
             provider = 'armoriq'
             reason = '; '.join(auth['reasons']) or auth['status']
             emit('policy_decision', f"ArmorIQ governance decision ({auth['status']}).",
-                 {'provider': provider, 'decision': decision, 'reason': reason,
+                 {'provider': provider, 'decision': decision, 'reason': reason, 'tool': tier_tool,
                   'evidence_id': auth['evidence_id'], 'evidence_verified': auth['evidence_verified'],
                   'status': auth['status']})
 

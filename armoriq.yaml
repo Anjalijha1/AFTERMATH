@@ -12,6 +12,8 @@ proxy:
   max_retries: 3
 mcp_servers:
   - id: aftermath-mcp
+    # ArmorIQ's proxy calls the MCP itself, so this must be a public HTTPS SSE URL
+    # (see mcp_public/server.py). Local default kept for local runs.
     url: http://127.0.0.1:8000/sse
     description: AFTERMATH Synthetic Support MCP
     auth:
@@ -21,7 +23,8 @@ policy:
     - aftermath-mcp.read_ticket_tool
     - aftermath-mcp.lookup_customer_tool
     - aftermath-mcp.issue_refund_tool
-  deny: []
+  deny:
+    - aftermath-mcp.issue_large_refund_tool
 intent:
   ttl_seconds: 300
   require_csrg: false
