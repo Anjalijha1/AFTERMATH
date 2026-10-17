@@ -1,7 +1,16 @@
-# AFTERMATH + OpsDesk (Team Jarvis, Flow State 2026)
+# AFTERMATH + OpsDesk (Team Cosmic, Flow State 2026)
 
 Back-office support agent whose every sensitive action is governed by **ArmorIQ**;
 blocked actions become reusable regression tests that replay on every change.
+
+
+## Live deployment
+
+- Dashboard: https://aftermath-dashboard-cosmic.onrender.com
+- API: https://aftermath-api-cosmic.onrender.com
+- MCP server: https://aftermath-mcp-jarvis.onrender.com/mcp (the hosted service
+  was created under its earlier name and its URL cannot be renamed, so it still
+  says "jarvis". It is the same project, Team Cosmic.)
 
 - **Agent** (`agent/`): interprets a support ticket into a structured proposal
   (Gemini structured output when `GEMINI_API_KEY` is set; clearly labeled
