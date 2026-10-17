@@ -31,6 +31,14 @@ def create_app(db_path=None, runner: Runner | None = None, api_key=None):
     if adapter is None:
         limit = int(os.getenv('AFTERMATH_REFUND_LIMIT_MINOR', '100000'))
         if os.getenv('AFTERMATH_RUNNER', 'mock').strip().lower() in ('live', 'armoriq', 'real'):
+            # Live mode reads keys from the environment; as a convenience it also
+            # loads the repo-root .env (gitignored) when python-dotenv is installed.
+            try:
+                from dotenv import load_dotenv
+                from pathlib import Path
+                load_dotenv(Path(__file__).resolve().parents[2] / '.env', override=False)
+            except ImportError:
+                pass
             from .live_runner import LiveRunner
             adapter = LiveRunner(limit)
         else:
