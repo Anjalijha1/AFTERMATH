@@ -1,4 +1,4 @@
-"""Public MCP server for ArmorIQ (SSE transport), synthetic data only.
+"""Public MCP server for ArmorIQ (streamable HTTP, SSE optional), synthetic data only.
 
 ArmorIQ's proxy calls this server itself, so it must be reachable over HTTPS.
 It never mutates AFTERMATH state: the backend applies the sandbox refund only after
@@ -9,7 +9,7 @@ Tool tiers (ArmorIQ policy is tool-level, so the refund limit is expressed by to
 - issue_large_refund_tool  refunds above the cap; policy: block. It never executes.
 The MCP also enforces the cap itself, so a large amount sent to the small tool fails.
 
-Run: python mcp_public/server.py   (uses $PORT, default 8000; SSE at /sse)
+Run: python mcp_public/server.py   (uses $PORT, default 8000; streamable HTTP at /mcp by default; MCP_TRANSPORT=sse for /sse)
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from mcp.server.fastmcp import FastMCP
 REFUND_CAP = float(os.getenv("MCP_REFUND_CAP", "1000"))
 PORT = int(os.getenv("PORT", "8000"))
 
-mcp = FastMCP("AFTERMATH Synthetic Support MCP", host="0.0.0.0", port=PORT)
+mcp = FastMCP("AFTERMATH Synthetic Support MCP", host="0.0.0.0", port=PORT, stateless_http=True, json_response=True)
 
 _TICKETS = {"TKT-1001": {"ticket_id": "TKT-1001", "customer_id": "CUST-001",
                          "message": "Synthetic support ticket", "requested_refund": 500.0}}
@@ -55,4 +55,4 @@ def issue_large_refund_tool(customer_id: str, amount: float) -> dict:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="sse")
+    mcp.run(transport=os.getenv("MCP_TRANSPORT", "streamable-http"))
