@@ -16,10 +16,34 @@ from .store import CapacityExceeded, IdempotencyConflict, ScenarioExists, Store
 logger = logging.getLogger(__name__)
 
 
+def _armoriq_status():
+    try:
+        from . import armoriq
+        return armoriq.status()
+    except Exception:
+        return {'available': False, 'sdk_installed': False, 'api_key_configured': False,
+                'missing': ['armoriq adapter failed to load']}
+
+
 def create_app(db_path=None, runner: Runner | None = None, api_key=None):
     store = Store(db_path or os.getenv('AFTERMATH_DB_PATH', './data/aftermath.db'))
-    adapter = runner or MockRunner(int(os.getenv('AFTERMATH_REFUND_LIMIT_MINOR', '100000')))
-    if isinstance(adapter, MockRunner):
+    adapter = runner
+    if adapter is None:
+        limit = int(os.getenv('AFTERMATH_REFUND_LIMIT_MINOR', '100000'))
+        if os.getenv('AFTERMATH_RUNNER', 'mock').strip().lower() in ('live', 'armoriq', 'real'):
+            # Live mode reads keys from the environment; as a convenience it also
+            # loads the repo-root .env (gitignored) when python-dotenv is installed.
+            try:
+                from dotenv import load_dotenv
+                from pathlib import Path
+                load_dotenv(Path(__file__).resolve().parents[2] / '.env', override=False)
+            except ImportError:
+                pass
+            from .live_runner import LiveRunner
+            adapter = LiveRunner(limit)
+        else:
+            adapter = MockRunner(limit)
+    if hasattr(adapter, 'scenario_lookup'):
         adapter.scenario_lookup = store.get_scenario
     key = api_key if api_key is not None else os.getenv('AFTERMATH_API_KEY', '')
 
@@ -34,7 +58,8 @@ def create_app(db_path=None, runner: Runner | None = None, api_key=None):
             await asyncio.to_thread(app.state.executor.shutdown, wait=True)
 
     app = FastAPI(title='AFTERMATH Backend', version='0.1.0', lifespan=lifespan,
-                  description='Member 1 backend. Mock sandbox only. No real ArmorIQ, MCP or LLM integration.')
+                  description=('Member 1 backend. Mock runner by default; set AFTERMATH_RUNNER=live with '
+                  'ARMORIQ_API_KEY and GEMINI_API_KEY for the real agent + ArmorIQ path.'))
     app.state.store = store
     @app.middleware('http')
     async def guard(request: Request, call_next):
@@ -109,18 +134,20 @@ def create_app(db_path=None, runner: Runner | None = None, api_key=None):
             except Exception:
                 store.fail(run_id)
                 raise HTTPException(503, detail={'code': 'WORKER_UNAVAILABLE', 'message': 'Run worker unavailable.'})
-        return RunAccepted(run_id=run_id, status=store.get(run_id)['status'], status_url=f'{prefix}/runs/{run_id}')
+        return RunAccepted(run_id=run_id, status=store.get(run_id)['status'], status_url=f'{prefix}/runs/{run_id}', execution_mode=getattr(adapter, 'mode', 'mock'))
 
     @route('GET', '/health')
     def health():
         with store.connection() as db:
             db.execute('SELECT 1')
-        return {'status': 'ok', 'execution_mode': 'mock', 'real_armoriq': False,
+        return {'status': 'ok', 'execution_mode': getattr(adapter, 'mode', 'mock'),
+                'real_armoriq': bool(getattr(adapter, 'real_armoriq', False)),
+                'armoriq': _armoriq_status(),
                 'mock_refund_limit_minor': getattr(adapter, 'refund_limit_minor', None)}
 
     @route('GET', '/scenarios')
     def scenarios():
-        return {'execution_mode': 'mock', 'items': store.list_scenarios()}
+        return {'execution_mode': getattr(adapter, 'mode', 'mock'), 'items': store.list_scenarios()}
 
     @route('POST', '/scenarios', status_code=201)
     def create_scenario(scenario: ScenarioIn):

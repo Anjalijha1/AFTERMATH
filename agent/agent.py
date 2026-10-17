@@ -1,52 +1,67 @@
-import json
+"""AFTERMATH support agent: interpret a ticket into a structured proposal.
 
-from .schemas import AgentResult
-from .scenarios import SCENARIOS
-from .prompts import SYSTEM_PROMPT
-from .llm_client import get_llm_response
+The agent only INTERPRETS the ticket. It never authorizes and never executes;
+ArmorIQ (governance) and the backend evaluator own those decisions. When no
+Gemini key/SDK is available, a deterministic fallback parser keeps the system
+usable and labels itself clearly in the explanation.
+"""
+from __future__ import annotations
+
+import re
+
+from .schemas import AgentResult, ProposedAction
+
+_AMOUNT_RE = re.compile(r"(\d+(?:\.\d{1,2})?)")
 
 
-def run_agent(scenario_name):
-    scenario = SCENARIOS[scenario_name]
-
-    customer_data = {
-        "customer_id": scenario["customer_id"],
-        "refund_limit": scenario["refund_limit"],
-        "requested_amount": scenario["requested_amount"]
-    }
-
-    raw_response = get_llm_response(
-        SYSTEM_PROMPT,
-        scenario["ticket"],
-        customer_data
+def _fallback_proposal(ticket: str, customer_id: str, refund_limit: float) -> ProposedAction:
+    """Deterministic, conservative ticket parser used when no LLM is available."""
+    amounts = [float(m.group(1)) for m in _AMOUNT_RE.finditer(ticket)]
+    # The largest mentioned amount is the riskiest reading of the ticket, so
+    # governance (ArmorIQ) sees the worst case an injected ticket asks for.
+    amount = max(amounts) if amounts else 0.0
+    lowered = ticket.lower()
+    wants_refund = "refund" in lowered or ("request" in lowered and amount > 0)
+    if wants_refund and amount > 0:
+        return ProposedAction(
+            action="issue_refund",
+            customer_id=customer_id,
+            amount=amount,
+            reason=(
+                f"Ticket requests a refund of {amount:g}. Whether it is within the "
+                f"{refund_limit:g} limit is for the governance layer to decide, not the agent."
+            ),
+        )
+    return ProposedAction(
+        action="deny_request",
+        customer_id=customer_id,
+        amount=0.0,
+        reason="Ticket does not contain a refund request the agent can act on.",
     )
 
-    result = AgentResult.model_validate_json(raw_response)
 
-    action = result.proposed_action
+def propose_action(*, ticket: str, customer_id: str, refund_limit: float) -> tuple[AgentResult, str]:
+    """Return (AgentResult, source); source is 'gemini' or 'fallback'."""
+    try:
+        from .llm_client import gemini_propose
 
-    if action.customer_id != scenario["customer_id"]:
-        raise ValueError("Unexpected customer ID in model output")
-
-    if action.amount != scenario["requested_amount"]:
-        raise ValueError("Proposed amount does not match the ticket")
-
-    if (
-        action.amount > scenario["refund_limit"]
-        and action.action != "deny_request"
-    ):
-        raise ValueError("Unsafe proposal: refund exceeds supplied limit")
-
-    return result
-
-
-if __name__ == "__main__":
-    for name in SCENARIOS:
-        print(f"\nScenario: {name}")
-
-        try:
-            result = run_agent(name)
-            print(result.model_dump_json(indent=2))
-        except Exception as error:
-            print(f"Agent error: {error}")
-
+        proposed = gemini_propose(ticket=ticket, customer_id=customer_id, refund_limit=refund_limit)
+        return (
+            AgentResult(
+                proposed_action=proposed,
+                explanation="Gemini interpretation of the ticket. A proposal only - not an authorization.",
+            ),
+            "gemini",
+        )
+    except Exception as exc:
+        proposed = _fallback_proposal(ticket, customer_id, refund_limit)
+        return (
+            AgentResult(
+                proposed_action=proposed,
+                explanation=(
+                    f"Deterministic fallback used because the LLM path was unavailable ({exc}). "
+                    "A proposal only - not an authorization."
+                ),
+            ),
+            "fallback",
+        )
