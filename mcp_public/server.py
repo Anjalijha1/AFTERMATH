@@ -54,5 +54,11 @@ def issue_large_refund_tool(customer_id: str, amount: float) -> dict:
     return {"status": "rejected", "reason": "large refunds require human approval; not executed"}
 
 
+@mcp.tool()
+def change_account_email_tool(customer_id: str, new_email: str = "") -> dict:
+    """Change a customer's account email. Policy blocks this tool; it never executes here."""
+    return {"status": "rejected", "reason": "account email changes require verification; not executed"}
+
+
 if __name__ == "__main__":
     mcp.run(transport=os.getenv("MCP_TRANSPORT", "streamable-http"))

@@ -30,6 +30,9 @@ Emit = Callable[[str, str, dict], None]
 MAX_AMOUNT_MINOR = 10_000_000
 
 
+NON_REFUND_TOOLS = {'account_email_change': 'change_account_email_tool'}
+
+
 class LiveRunner:
     """Real integration runner. No model output can claim authorization."""
 
@@ -91,7 +94,7 @@ class LiveRunner:
               'proposal_source': source, 'agent_action': proposed.action,
               'agent_reason': proposed.reason, 'explanation': result.explanation})
 
-        if proposed.action == 'deny_request' or action != 'issue_refund':
+        if proposed.action == 'deny_request' and action == 'issue_refund':
             # Agent-layer refusal (or a non-refund action the agent will not touch):
             # an explicit, honestly labeled block without ArmorIQ involvement.
             decision = 'blocked'
@@ -106,11 +109,16 @@ class LiveRunner:
             # refund limit is expressed by WHICH tool is requested. Refunds within the
             # limit use issue_refund_tool (allowed by policy); anything above uses
             # issue_large_refund_tool (blocked by policy). The MCP also caps amounts itself.
-            tier_tool = ('issue_refund_tool' if amount_minor <= before['refund_limit_minor']
-                         else 'issue_large_refund_tool')
+            if action == 'issue_refund':
+                tier_tool = ('issue_refund_tool' if amount_minor <= before['refund_limit_minor']
+                             else 'issue_large_refund_tool')
+            else:
+                # Non-refund actions (e.g. account email change) get their own tool, which
+                # the ArmorIQ policy blocks. The request still goes to ArmorIQ for a real verdict.
+                tier_tool = NON_REFUND_TOOLS.get(action, 'change_account_email_tool')
             auth = armoriq.authorize(tool_name=f'{armoriq.MCP_ID}.{tier_tool}',
                                      customer_id=CUSTOMER_ID,
-                                     amount_major=amount_minor / 100, limit_major=limit_major,
+                                     amount_major=(amount_minor or 0) / 100, limit_major=limit_major,
                                      user_prompt=ticket)
             if auth['decision'] == 'unknown':
                 raise RuntimeError('ArmorIQ authorization unavailable: ' + '; '.join(auth['reasons']))
