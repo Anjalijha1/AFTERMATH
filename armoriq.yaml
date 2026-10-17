@@ -11,21 +11,21 @@ proxy:
   timeout: 30
   max_retries: 3
 mcp_servers:
-  - id: aftermath-mcp-public
+  - id: aftermath-mcp-cosmic
     # ArmorIQ's proxy calls the MCP itself, so this must be a public HTTPS URL
-    # (see mcp_public/server.py, streamable HTTP at /mcp). Live: https://aftermath-mcp-jarvis.onrender.com/mcp
-    url: https://aftermath-mcp-jarvis.onrender.com/mcp
+    # (see mcp_public/server.py, streamable HTTP at /mcp). Live: https://aftermath-mcp-cosmic.onrender.com/mcp
+    url: https://aftermath-mcp-cosmic.onrender.com/mcp
     description: AFTERMATH Synthetic Support MCP
     auth:
       type: none
 policy:
   allow:
-    - aftermath-mcp-public.read_ticket_tool
-    - aftermath-mcp-public.lookup_customer_tool
-    - aftermath-mcp-public.issue_refund_tool
+    - aftermath-mcp-cosmic.read_ticket_tool
+    - aftermath-mcp-cosmic.lookup_customer_tool
+    - aftermath-mcp-cosmic.issue_refund_tool
   deny:
-    - aftermath-mcp-public.issue_large_refund_tool
-    - aftermath-mcp-public.change_account_email_tool
+    - aftermath-mcp-cosmic.issue_large_refund_tool
+    - aftermath-mcp-cosmic.change_account_email_tool
 intent:
   ttl_seconds: 300
   require_csrg: false

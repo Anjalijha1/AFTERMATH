@@ -30,7 +30,7 @@ try:
 except ImportError:  # pragma: no cover - depends on local environment
     ARMORIQ_SDK_AVAILABLE = False
 
-MCP_ID = os.getenv('AFTERMATH_ARMORIQ_MCP_ID', 'aftermath-mcp-public')
+MCP_ID = os.getenv('AFTERMATH_ARMORIQ_MCP_ID', 'aftermath-mcp-cosmic')
 USER_EMAIL = os.getenv('AFTERMATH_ARMORIQ_USER_EMAIL', 'support@synthetic.local')
 
 

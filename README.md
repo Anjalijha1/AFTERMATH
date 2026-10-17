@@ -8,9 +8,7 @@ blocked actions become reusable regression tests that replay on every change.
 
 - Dashboard: https://aftermath-dashboard-cosmic.onrender.com
 - API: https://aftermath-api-cosmic.onrender.com
-- MCP server: https://aftermath-mcp-jarvis.onrender.com/mcp (the hosted service
-  was created under its earlier name and its URL cannot be renamed, so it still
-  says "jarvis". It is the same project, Team Cosmic.)
+- MCP server: https://aftermath-mcp-cosmic.onrender.com/mcp
 
 - **Agent** (`agent/`): interprets a support ticket into a structured proposal
   (Gemini structured output when `GEMINI_API_KEY` is set; clearly labeled
@@ -55,8 +53,8 @@ no numeric amount condition. So the refund limit is expressed by **which tool is
 
 | Amount | Tool requested | ArmorIQ policy | Result |
 | --- | --- | --- | --- |
-| within the refund limit (e.g. INR 500) | `aftermath-mcp-public.issue_refund_tool` | allow | ALLOW |
-| above the limit (e.g. injected INR 50,000) | `aftermath-mcp-public.issue_large_refund_tool` | block | BLOCK |
+| within the refund limit (e.g. INR 500) | `aftermath-mcp-cosmic.issue_refund_tool` | allow | ALLOW |
+| above the limit (e.g. injected INR 50,000) | `aftermath-mcp-cosmic.issue_large_refund_tool` | block | BLOCK |
 
 The live runner picks the tool from the amount and the limit. The MCP also caps amounts
 itself (`issue_refund_tool` rejects amounts above `MCP_REFUND_CAP`). The amount threshold is
@@ -71,8 +69,8 @@ reachable over public HTTPS and registered in the platform (`armoriq.yaml` / Inv
   PASS, regression fixture created, evidence id recorded).
 - Real ArmorIQ **allow** verified end-to-end: INR 500 refund -> `issue_refund_tool` -> ALLOWED_BY_ARMORIQ.
   Injected INR 50,000 -> `issue_large_refund_tool` -> BLOCKED_BY_ARMORIQ_POLICY; account email change ->
-  `change_account_email_tool` -> blocked. Platform setup: MCP `aftermath-mcp-public` registered in the
-  workspace (public Render service) and policy `aftermath-mcp-public-tiered` active. Rule tool names in the
+  `change_account_email_tool` -> blocked. Platform setup: MCP `aftermath-mcp-cosmic` registered in the
+  workspace (public Render service) and policy `aftermath-mcp-cosmic-tiered` active. Rule tool names in the
   ArmorIQ policy must be qualified (`<mcp>.<tool>`) for them to match.
 - Gemini path is implemented but untested live (no key yet); without it the
   agent's deterministic fallback is used and labeled in the evidence.
