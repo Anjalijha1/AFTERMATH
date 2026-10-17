@@ -39,16 +39,32 @@ VITE_DEMO_MODE=false npm run dev               # http://localhost:5173
 cd backend && pytest -q
 ```
 
+## ArmorIQ policy and tool tiering (honest note)
+
+ArmorIQ policies in the platform editor are tool-level (allow / hold / block); they have
+no numeric amount condition. So the refund limit is expressed by **which tool is called**:
+
+| Amount | Tool requested | ArmorIQ policy | Result |
+| --- | --- | --- | --- |
+| within the refund limit (e.g. INR 500) | `aftermath-mcp-public.issue_refund_tool` | allow | ALLOW |
+| above the limit (e.g. injected INR 50,000) | `aftermath-mcp-public.issue_large_refund_tool` | block | BLOCK |
+
+The live runner picks the tool from the amount and the limit. The MCP also caps amounts
+itself (`issue_refund_tool` rejects amounts above `MCP_REFUND_CAP`). The amount threshold is
+therefore enforced by tool tiering plus the MCP cap, not by a numeric ArmorIQ constraint.
+ArmorIQ's proxy calls the MCP itself, so the server in `mcp_public/server.py` (streamable HTTP, /mcp) must be
+reachable over public HTTPS and registered in the platform (`armoriq.yaml` / Inventory).
+
 ## Status (honest)
 
 - Real ArmorIQ **deny** verified end-to-end through the live API (injection
   scenario: agent proposed the injected INR 50,000, ArmorIQ blocked it, verdict
   PASS, regression fixture created, evidence id recorded).
-- Real ArmorIQ **allow** is pending platform-side setup: in the ArmorIQ
-  workspace the `aftermath-mcp` server is registered but has no tools/policy
-  entries yet, so the platform currently denies every tool. Register the tools
-  and add the allow policy (refunds under the limit) in the ArmorIQ dashboard,
-  then the same code path returns verified allows with no code change.
+- Real ArmorIQ **allow** verified end-to-end: INR 500 refund -> `issue_refund_tool` -> ALLOWED_BY_ARMORIQ.
+  Injected INR 50,000 -> `issue_large_refund_tool` -> BLOCKED_BY_ARMORIQ_POLICY; account email change ->
+  `change_account_email_tool` -> blocked. Platform setup: MCP `aftermath-mcp-public` registered in the
+  workspace (public Render service) and policy `aftermath-mcp-public-tiered` active. Rule tool names in the
+  ArmorIQ policy must be qualified (`<mcp>.<tool>`) for them to match.
 - Gemini path is implemented but untested live (no key yet); without it the
   agent's deterministic fallback is used and labeled in the evidence.
 - Money is integer paise in the backend (`amount_minor`), major units in agent

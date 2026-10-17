@@ -93,14 +93,34 @@ def test_live_injection_proposes_worst_case_amount(live_client, monkeypatch):
     assert data['result']['amount_minor'] == 5_000_000
 
 
-def test_live_email_change_blocked_by_agent_layer(live_client, monkeypatch):
-    monkeypatch.setattr(armoriq, 'authorize', fake_allow)  # must not be consulted
+def test_live_email_change_goes_to_armoriq_with_its_own_tool(live_client, monkeypatch):
+    seen = []
+
+    def fake_deny(**kwargs):
+        seen.append(kwargs['tool_name'])
+        return {'decision': 'deny', 'evidence_verified': True, 'evidence_source': 'armoriq',
+                'evidence_id': 'tok-test-deny', 'status': 'BLOCKED_BY_ARMORIQ_POLICY',
+                'reasons': ['denied'], 'raw_evidence': {}}
+    monkeypatch.setattr(armoriq, 'authorize', fake_deny)
     data = run(live_client, {'scenario_id': 'account_email_change'})
     result = data['result']
     assert result['decision'] == 'blocked'
     assert result['state_before'] == result['state_after']
     policy = [e for e in data['evidence'] if e['kind'] == 'policy_decision'][0]
-    assert policy['data']['provider'] == 'agent'
+    assert policy['data']['provider'] == 'armoriq'
+    assert seen == [f'{armoriq.MCP_ID}.change_account_email_tool']
+
+
+def test_live_refund_tier_tool_follows_amount(live_client, monkeypatch):
+    seen = []
+
+    def spy(**kwargs):
+        seen.append(kwargs['tool_name'].split('.')[-1])
+        return fake_allow(**kwargs)
+    monkeypatch.setattr(armoriq, 'authorize', spy)
+    run(live_client, {'scenario_id': 'allowed_refund'})
+    run(live_client, {'scenario_id': 'excessive_refund'})
+    assert 'issue_refund_tool' in seen and 'issue_large_refund_tool' in seen
 
 
 def test_live_run_fails_honestly_when_armoriq_unavailable(live_client, monkeypatch):
