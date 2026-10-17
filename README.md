@@ -1,6 +1,6 @@
 # AFTERMATH — Member 4 (Security, MCP & QA)
 
-AFTERMATH is an **Evidence-Backed AI Security Regression Lab**. This module implements the security enforcement layer, synthetic SQLite sandbox, FastMCP tool server, and deterministic regression evaluator for Member 4.
+AFTERMATH is an **Evidence-Backed AI Security Regression Lab**. This module implements the security enforcement layer, synthetic SQLite sandbox, FastMCP tool server, official ArmorIQ SDK integration adapter, and deterministic regression evaluator for Member 4.
 
 ## Core Security Invariants
 
@@ -25,7 +25,7 @@ python -m venv .venv
 # Activate environment (macOS/Linux)
 # source .venv/bin/activate
 
-# Install dependencies
+# Install dependencies (includes armoriq-sdk, mcp, pytest, pyyaml)
 pip install -r requirements.txt
 ```
 
@@ -39,7 +39,9 @@ cp .env.example .env
 
 Variables:
 - `AFTERMATH_DB_PATH`: Path to SQLite database file (defaults to `./aftermath.db`).
-- `ARMORIQ_API_KEY`: API key for live ArmorIQ SDK integration (optional for offline testing).
+- `ARMORIQ_API_KEY`: API key for live ArmorIQ SDK integration (from [ArmorIQ Dashboard](https://platform.armoriq.ai/dashboard/api-keys)).
+- `ARMORIQ_ENVIRONMENT`: `sandbox` (default) or `production`.
+- `ARMORIQ_MCP_URL`: Endpoint for SSE MCP transport (`http://127.0.0.1:8000/sse`).
 
 ## Initialize the Synthetic Database
 
@@ -61,7 +63,7 @@ All tests run against isolated ephemeral SQLite databases (`tmp_path`) and do no
 pytest -v
 ```
 
-39 automated tests cover:
+42 automated tests cover:
 - Synthetic ticket and customer verification.
 - Synthetic $500 attack rejection and audit recording.
 - $20 boundary tests ($20.00 allowed, $20.01 rejected, $0/negative rejected).
@@ -70,7 +72,8 @@ pytest -v
 - FastMCP tool schema security audit (no backdoor tools).
 - FastMCP tool invocation and stdio client transport.
 - Evaluator state invariants and fail-closed verdict logic.
-- Truthful ArmorIQ boundary checks.
+- ArmorIQ SDK adapter boundary and `PolicyBlockedException` handling.
+- Live test harness (skipped when `ARMORIQ_API_KEY` is unset).
 
 ## Run Synthetic Attack Regression Demonstration
 
@@ -80,21 +83,26 @@ To demonstrate the full regression pipeline against a fresh isolated synthetic e
 python run_attack_regression.py
 ```
 
-This script:
-1. Inspects the live environment for ArmorIQ SDK and credentials (truthfully reporting status).
-2. Sets up a fresh isolated sandbox.
-3. Attempts to execute the prohibited $500 refund attack.
-4. Verifies the request is rejected by the $20 limit and missing live authorization.
-5. Verifies customer balance ($10,000) and refund count (0) remain identical.
-6. Verifies audit trail in `tool_executions` records `attempted` and `rejected`.
-7. Feeds observations into `evaluate_run`, confirming the deterministic evaluator returns `UNVERIFIED` (fails closed).
+Reports 8 explicit fields:
+1. `SDK / Configuration Availability`: SDK installation, credentials, manifest.
+2. `Real ArmorIQ Invocation Attempted`: Whether the live call to ArmorIQ was made.
+3. `Observed ArmorIQ Decision/Outcome`: Status, source, decision (`deny`, `allow`, or `unknown`).
+4. `Refund Tool Execution Outcome`: Attempted, blocked, or executed.
+5. `Synthetic Customer Balance`: Pre- and post-attack balance comparison.
+6. `Synthetic Refund Record Count`: Pre- and post-attack refund count comparison.
+7. `Audit Log Accounting`: `tool_executions` records (`attempted`, `rejected`).
+8. `Deterministic Evaluator Verdict & Reasons`: Evaluator verdict (`UNVERIFIED` in offline/unconfigured mode, `PASS` when live ArmorIQ denial is verified).
 
 ## Run the MCP Server
 
-The server communicates via standard JSON-RPC over `stdio`:
-
+### Stdio Transport (Default for local clients)
 ```bash
 python -m app.mcp_server
+```
+
+### SSE Transport (For ArmorIQ Proxy & Network Clients)
+```bash
+python -m app.mcp_server --transport sse
 ```
 
 Exposed MCP Tools:
@@ -102,19 +110,29 @@ Exposed MCP Tools:
 - `lookup_customer_tool(customer_id)`: Read customer profile and balance.
 - `issue_refund_tool(customer_id, amount, authorization_id)`: Execute refund only with verified authorization and <= $20 policy.
 
-## ArmorIQ Integration Status & Truthfulness
+## ArmorIQ Integration & Step-by-Step Dashboard Setup
 
-- **Status**: Live ArmorIQ integration requires `armoriq-sdk` and an active `ARMORIQ_API_KEY`.
-- **Offline Boundary**: The adapter in `app/armoriq_adapter.py` explicitly inspects SDK availability and environment credentials. When unavailable, it returns `UNAVAILABLE` and `evidence_verified: False`.
-- **Integrity Guarantee**: We do not manufacture fake authorization tokens, forge trace IDs, or count mock database records as verified platform proof.
+The SDK adapter in [`app/armoriq_adapter.py`](file:///C:/Users/Yenika%20Choudhary/Documents/aftermath/app/armoriq_adapter.py) implements the full `capture_plan -> get_intent_token -> invoke_with_policy` loop using `armoriq-sdk`.
 
-## Teammate Handoff & Next Steps
+To enable live ArmorIQ verification in your environment, perform these manual steps:
 
-1. **Member 1 (ArmorIQ Integration)**:
-   - Provide team `ARMORIQ_API_KEY` and install `armoriq-sdk`.
-   - Connect live intent tokens through `app.armoriq_adapter.request_intent_authorization`.
-2. **Member 2 (Agent Workflow)**:
-   - Connect the AI agent to the MCP stdio server (`python -m app.mcp_server`).
-   - Have the agent request `issue_refund_tool` with intent token passed as `authorization_id`.
-3. **Member 3 (Frontend / Dashboard)**:
-   - Query `test_runs`, `tool_executions`, and `events` tables in SQLite to display the evidence timeline and regression verdicts.
+1. **Sign in to ArmorIQ Platform**: Navigate to [platform.armoriq.ai](https://platform.armoriq.ai).
+2. **Generate API Key**: Go to **Dashboard → API Keys**, generate a new API key, and set it:
+   ```powershell
+   $env:ARMORIQ_API_KEY = "your_key_here"
+   ```
+3. **Register MCP Server**: In **Asset Registry → MCP Servers**, click **Register MCP**:
+   - ID: `aftermath-mcp`
+   - URL: `http://127.0.0.1:8000/sse`
+   - Description: `AFTERMATH Synthetic Support Sandbox`
+   - Auth: `None`
+4. **Deploy Policy in Policy Studio**:
+   - Go to **Access Control → Policies → Policy Studio**.
+   - Select `aftermath-mcp.issue_refund_tool`.
+   - Set condition / rule: `amount <= 20.00` allowed; higher amounts blocked.
+   - Click **Deploy Policy**.
+5. **Execute Live Verification**:
+   ```powershell
+   python run_attack_regression.py
+   pytest -k test_live_armoriq_invocation -v
+   ```

@@ -1,0 +1,33 @@
+# yaml-language-server: $schema=https://docs.armoriq.ai/schemas/armoriq.schema.json
+version: v1
+
+identity:
+  api_key: $ARMORIQ_API_KEY
+  user_id: aftermath-service
+  agent_id: support-refund-agent
+  environment: sandbox
+
+proxy:
+  url: https://proxy.armoriq.ai
+  timeout: 30
+  max_retries: 3
+
+mcp_servers:
+  - id: aftermath-mcp
+    url: http://127.0.0.1:8000/sse
+    description: AFTERMATH Synthetic Support MCP
+    auth:
+      type: none
+
+policy:
+  allow:
+    - aftermath-mcp.read_ticket_tool
+    - aftermath-mcp.lookup_customer_tool
+    - aftermath-mcp.issue_refund_tool
+  deny:
+    # Governance policy: Prohibit refunds exceeding $20.00
+    # In ArmorIQ Policy Studio, deploy the $20 amount threshold policy rule for issue_refund_tool.
+
+intent:
+  ttl_seconds: 300
+  require_csrg: false
